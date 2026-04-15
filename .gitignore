@@ -1,0 +1,14 @@
+.DS_Store
+.idea/
+.claude/
+docs/
+findings.md
+progress.md
+task_plan.md
+# Harness: Agent 错误记忆
+.harness/
+CLAUDE.md
+AGENTS.md
+.agents/
+.codex/
+.worktrees/
