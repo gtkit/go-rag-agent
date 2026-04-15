@@ -1,6 +1,6 @@
 ## 1. OpenSpec And Dependency Setup
 
-- [ ] 1.1 Add the initial Go module dependencies for Eino OpenAI-compatible model and embedding packages, chromem-go, gtkit/json, and gtkit/logger.
+- [x] 1.1 Add the initial Go module dependencies for Eino OpenAI-compatible model and embedding packages, chromem-go, gtkit/json, and gtkit/logger.
 - [ ] 1.2 Create the root-package public contracts for config, errors, sources, answers, citations, callbacks, and stream events.
 
 ## 2. Knowledge Ingestion And Storage
