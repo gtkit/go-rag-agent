@@ -17,6 +17,9 @@ type Session struct {
 	mu      sync.Mutex
 	history *memory.History
 	closed  bool
+
+	// beforeAskLock is test-only and runs after operation admission, before s.mu.Lock.
+	beforeAskLock func()
 }
 
 // Ask executes the synchronous ask pipeline for this session.
@@ -25,6 +28,10 @@ func (s *Session) Ask(ctx context.Context, query string) (Answer, error) {
 		return Answer{}, err
 	}
 	defer s.agent.endOperation()
+
+	if s.beforeAskLock != nil {
+		s.beforeAskLock()
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -584,3 +584,99 @@ func TestGetSessionAfterCloseDoesNotMutateRegistry(t *testing.T) {
 		t.Fatalf("GetSession() after close should not mutate registry, got %d entries", len(a.sessions))
 	}
 }
+
+func TestCloseDoesNotForceErrSessionClosedForAdmittedAsk(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeStore{
+		searchHits: []storage.SearchHit{
+			{
+				Chunk: storage.ChunkRecord{
+					ChunkID:    "doc:0",
+					SourcePath: "/tmp/doc.md",
+					Title:      "doc",
+					Text:       "alpha beta",
+				},
+				Score: 0.95,
+			},
+		},
+	}
+	a := &Agent{
+		cfg: Config{
+			TopK:                5,
+			SimilarityThreshold: 0.5,
+			ChatModel:           "chat-test",
+			MaxHistoryRounds:    8,
+		},
+		store:    store,
+		embedder: &fakeEmbedder{defaultVec: []float32{1, 2, 3}},
+		runner:   &fakeRunner{answer: "ok"},
+		sessions: make(map[string]*Session),
+	}
+	s := a.GetSession("race-session")
+
+	admitted := make(chan struct{}, 1)
+	release := make(chan struct{})
+	s.beforeAskLock = func() {
+		select {
+		case admitted <- struct{}{}:
+		default:
+		}
+		<-release
+	}
+
+	askResult := make(chan struct {
+		answer Answer
+		err    error
+	}, 1)
+	go func() {
+		answer, err := s.Ask(context.Background(), "what is this?")
+		askResult <- struct {
+			answer Answer
+			err    error
+		}{
+			answer: answer,
+			err:    err,
+		}
+	}()
+
+	select {
+	case <-admitted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ask() was not admitted before timeout")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- a.Close()
+	}()
+
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close() returned before admitted Ask() drained: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case got := <-askResult:
+		if got.err != nil {
+			t.Fatalf("Ask() error = %v, want nil", got.err)
+		}
+		if got.answer.Text != "ok" {
+			t.Fatalf("Ask() text = %q, want %q", got.answer.Text, "ok")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ask() did not complete after unblocking")
+	}
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() did not return after Ask() drained")
+	}
+}

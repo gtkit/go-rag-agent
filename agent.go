@@ -188,6 +188,13 @@ func (a *Agent) Close() error {
 		return nil
 	}
 
+	a.opMu.Lock()
+	a.ensureOpCondLocked()
+	for a.inFlight > 0 {
+		a.opCond.Wait()
+	}
+	a.opMu.Unlock()
+
 	a.sessionsMu.Lock()
 	sessions := make([]*Session, 0, len(a.sessions))
 	for _, session := range a.sessions {
@@ -199,13 +206,6 @@ func (a *Agent) Close() error {
 	for _, session := range sessions {
 		_ = session.Close()
 	}
-
-	a.opMu.Lock()
-	a.ensureOpCondLocked()
-	for a.inFlight > 0 {
-		a.opCond.Wait()
-	}
-	a.opMu.Unlock()
 
 	if a.store == nil {
 		return nil
@@ -295,9 +295,6 @@ func citationsFromHits(hits []storage.SearchHit) []Citation {
 func (a *Agent) askLocked(ctx context.Context, s *Session, query string) (Answer, error) {
 	if err := ctx.Err(); err != nil {
 		return Answer{}, err
-	}
-	if a.isClosed() {
-		return Answer{}, ErrAgentClosed
 	}
 
 	rewrittenQuery := rag.RewriteFollowUp(query, s.history.LastUserQueries())
