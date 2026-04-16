@@ -712,6 +712,82 @@ func TestSessionAskStreamCallbackAgentCloseFailsFast(t *testing.T) {
 	}
 }
 
+func TestAskTelemetryCallbackReentryFailsFast(t *testing.T) {
+	t.Parallel()
+
+	var (
+		closeErr error
+		askErr   error
+	)
+	recorder := &telemetryReentryCallback{
+		onRetrieveStart: func(a *Agent, s *Session) {
+			closeErr = a.Close()
+			_, askErr = s.Ask(context.Background(), "reenter")
+		},
+	}
+	store := &fakeStore{
+		searchHits: []storage.SearchHit{
+			{
+				Chunk: storage.ChunkRecord{
+					ChunkID:    "doc:0",
+					SourcePath: "/tmp/doc.md",
+					Title:      "doc",
+					Text:       "evidence text",
+				},
+				Score: 0.99,
+			},
+		},
+	}
+	a := &Agent{
+		cfg: Config{
+			TopK:                5,
+			SimilarityThreshold: 0.5,
+			ChatModel:           "chat-test",
+			MaxHistoryRounds:    8,
+		},
+		store:      store,
+		embedder:   &fakeEmbedder{defaultVec: []float32{1, 2, 3}},
+		runner:     &fakeStreamingRunner{askFn: func(_ context.Context, _ graph.Request) (string, error) { return "ok", nil }},
+		dispatcher: telemetry.NewDispatcher([]telemetry.Callback{recorder}),
+		sessions:   make(map[string]*Session),
+	}
+	s := a.GetSession("telemetry-reentry")
+	recorder.agent = a
+	recorder.session = s
+
+	answer, err := s.Ask(context.Background(), "what is this?")
+	if err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+	if answer.Text != "ok" {
+		t.Fatalf("Ask() text = %q, want %q", answer.Text, "ok")
+	}
+	if closeErr == nil || !strings.Contains(closeErr.Error(), "callback") {
+		t.Fatalf("Agent.Close() error = %v, want callback-related error", closeErr)
+	}
+	if !errors.Is(askErr, errSessionCallbackReentry) {
+		t.Fatalf("reentrant Ask() error = %v, want %v", askErr, errSessionCallbackReentry)
+	}
+}
+
+type telemetryReentryCallback struct {
+	agent           *Agent
+	session         *Session
+	onRetrieveStart func(a *Agent, s *Session)
+}
+
+func (c *telemetryReentryCallback) OnRetrieveStart(context.Context, string) {
+	if c.onRetrieveStart != nil {
+		c.onRetrieveStart(c.agent, c.session)
+	}
+}
+
+func (c *telemetryReentryCallback) OnRetrieveEnd(context.Context, int, error) {}
+func (c *telemetryReentryCallback) OnToolStart(context.Context, string)       {}
+func (c *telemetryReentryCallback) OnToolEnd(context.Context, string, error)  {}
+func (c *telemetryReentryCallback) OnModelStart(context.Context, string)      {}
+func (c *telemetryReentryCallback) OnModelEnd(context.Context, string, error) {}
+
 func containsErr(got error, want error) bool {
 	if got == nil || want == nil {
 		return false

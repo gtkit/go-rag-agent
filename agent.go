@@ -218,9 +218,15 @@ func (a *Agent) Close() error {
 	return a.store.Close()
 }
 
+func (a *Agent) runTelemetryCallback(fn func()) {
+	a.callbackDepth.Add(1)
+	defer a.callbackDepth.Add(-1)
+	fn()
+}
+
 func (a *Agent) retrieve(ctx context.Context, query string) ([]storage.SearchHit, string, error) {
-	a.dispatcher.OnRetrieveStart(ctx, query)
-	a.dispatcher.OnToolStart(ctx, retrieveToolName)
+	a.runTelemetryCallback(func() { a.dispatcher.OnRetrieveStart(ctx, query) })
+	a.runTelemetryCallback(func() { a.dispatcher.OnToolStart(ctx, retrieveToolName) })
 
 	var (
 		hits      []storage.SearchHit
@@ -230,8 +236,8 @@ func (a *Agent) retrieve(ctx context.Context, query string) ([]storage.SearchHit
 		retriever = newRootRetriever(a.store, a.embedder, a.cfg.TopK, float32(a.cfg.SimilarityThreshold))
 	)
 	defer func() {
-		a.dispatcher.OnRetrieveEnd(ctx, len(keptHits), runErr)
-		a.dispatcher.OnToolEnd(ctx, retrieveToolName, runErr)
+		a.runTelemetryCallback(func() { a.dispatcher.OnRetrieveEnd(ctx, len(keptHits), runErr) })
+		a.runTelemetryCallback(func() { a.dispatcher.OnToolEnd(ctx, retrieveToolName, runErr) })
 	}()
 
 	hits, runErr = retriever.Search(ctx, query)
@@ -308,13 +314,13 @@ func (a *Agent) askLocked(ctx context.Context, s *Session, query string) (Answer
 		return Answer{}, err
 	}
 
-	a.dispatcher.OnModelStart(ctx, a.cfg.ChatModel)
+	a.runTelemetryCallback(func() { a.dispatcher.OnModelStart(ctx, a.cfg.ChatModel) })
 	answerText, err := a.runner.Ask(ctx, graph.Request{
 		Query:        rewrittenQuery,
 		History:      s.history.Turns(),
 		EvidenceText: evidenceText,
 	})
-	a.dispatcher.OnModelEnd(ctx, a.cfg.ChatModel, err)
+	a.runTelemetryCallback(func() { a.dispatcher.OnModelEnd(ctx, a.cfg.ChatModel, err) })
 	if err != nil {
 		return Answer{}, fmt.Errorf("run answer generation: %w", err)
 	}
@@ -392,7 +398,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, e
 
 	var answerBuilder strings.Builder
 	var emitterErr error
-	a.dispatcher.OnModelStart(ctx, a.cfg.ChatModel)
+	a.runTelemetryCallback(func() { a.dispatcher.OnModelStart(ctx, a.cfg.ChatModel) })
 	err = a.runner.AskStream(ctx, graph.Request{
 		Query:        rewrittenQuery,
 		History:      s.history.Turns(),
@@ -423,7 +429,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, e
 			return nil
 		}
 	})
-	a.dispatcher.OnModelEnd(ctx, a.cfg.ChatModel, err)
+	a.runTelemetryCallback(func() { a.dispatcher.OnModelEnd(ctx, a.cfg.ChatModel, err) })
 	if err != nil {
 		if emitterErr != nil && errors.Is(err, emitterErr) {
 			return "", err
@@ -435,6 +441,9 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, e
 }
 
 func (a *Agent) beginOperation() error {
+	if a.callbackDepth.Load() > 0 {
+		return errSessionCallbackReentry
+	}
 	if a.isClosed() {
 		return ErrAgentClosed
 	}
@@ -442,6 +451,9 @@ func (a *Agent) beginOperation() error {
 	a.opMu.Lock()
 	defer a.opMu.Unlock()
 
+	if a.callbackDepth.Load() > 0 {
+		return errSessionCallbackReentry
+	}
 	if a.isClosed() {
 		return ErrAgentClosed
 	}

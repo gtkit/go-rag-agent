@@ -29,12 +29,12 @@ func RewriteFollowUp(query string, history []string) string {
 }
 
 func normalizeQueryText(input string) string {
-	fields := strings.Fields(strings.ToLower(input))
+	fields := strings.Fields(strings.TrimSpace(input))
 	return strings.Join(fields, " ")
 }
 
 func looksReferential(query string) bool {
-	words := strings.FieldsFunc(query, func(r rune) bool {
+	words := strings.FieldsFunc(strings.ToLower(query), func(r rune) bool {
 		return unicode.IsSpace(r) || unicode.IsPunct(r)
 	})
 	for i, word := range words {
@@ -70,7 +70,8 @@ func isDemonstrativePronounUsage(words []string, idx int) bool {
 }
 
 func isConcreteHistoryItem(item string) bool {
-	if looksReferential(item) {
+	lowerItem := strings.ToLower(item)
+	if looksReferential(lowerItem) {
 		return false
 	}
 	ambiguousPhrases := map[string]struct{}{
@@ -79,10 +80,10 @@ func isConcreteHistoryItem(item string) bool {
 		"continue":     {},
 		"more details": {},
 	}
-	if _, ok := ambiguousPhrases[item]; ok {
+	if _, ok := ambiguousPhrases[lowerItem]; ok {
 		return false
 	}
-	words := strings.FieldsFunc(item, func(r rune) bool {
+	words := strings.FieldsFunc(lowerItem, func(r rune) bool {
 		return unicode.IsSpace(r) || unicode.IsPunct(r)
 	})
 	if len(words) == 0 {

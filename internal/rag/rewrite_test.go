@@ -15,19 +15,19 @@ func TestRewriteFollowUp(t *testing.T) {
 			name:    "standalone query normalization",
 			query:   "   WHAT   is   RAG?   ",
 			history: nil,
-			want:    "what is rag?",
+			want:    "WHAT is RAG?",
 		},
 		{
 			name:    "referential follow-up prepends most recent history",
 			query:   "  what about   it?  ",
-			history: []string{"First topic", "   Explain vector database   "},
-			want:    "explain vector database what about it?",
+			history: []string{"First topic", "   Explain Vector Database   "},
+			want:    "Explain Vector Database what about it?",
 		},
 		{
 			name:    "skip ambiguous recent history and use latest concrete one",
 			query:   "how does it scale?",
-			history: []string{"explain vector database", "what about it?"},
-			want:    "explain vector database how does it scale?",
+			history: []string{"Explain Vector Database", "what about it?"},
+			want:    "Explain Vector Database how does it scale?",
 		},
 		{
 			name:    "leave referential query unchanged when history is ambiguous",
@@ -50,8 +50,8 @@ func TestRewriteFollowUp(t *testing.T) {
 		{
 			name:    "demonstrative pronoun style follow up remains referential",
 			query:   "what about this?",
-			history: []string{"explain vector database"},
-			want:    "explain vector database what about this?",
+			history: []string{"Explain Vector Database"},
+			want:    "Explain Vector Database what about this?",
 		},
 	}
 

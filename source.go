@@ -27,12 +27,15 @@ func (s fileSource) Resolve(ctx context.Context) ([]KnowledgeFile, error) {
 	if !isSupportedKnowledgePath(s.path) {
 		return nil, fmt.Errorf("unsupported file extension for %q: %w", s.path, ErrUnsupportedSource)
 	}
-	info, err := os.Stat(s.path)
+	info, err := os.Lstat(s.path)
 	if err != nil {
 		return nil, fmt.Errorf("stat source file %q: %w", s.path, err)
 	}
 	if info.IsDir() {
 		return nil, fmt.Errorf("file source is directory %q: %w", s.path, ErrUnsupportedSource)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("file source must be a regular file %q: %w", s.path, ErrUnsupportedSource)
 	}
 	return []KnowledgeFile{
 		{
@@ -73,6 +76,12 @@ func (s dirSource) Resolve(ctx context.Context) ([]KnowledgeFile, error) {
 			return err
 		}
 		if d.IsDir() {
+			return nil
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		if !isSupportedKnowledgePath(path) {

@@ -80,6 +80,38 @@ func TestFileAndDirSourceResolve(t *testing.T) {
 			},
 			wantErr: ErrUnsupportedSource,
 		},
+		{
+			name: "FileSource on symlink returns error",
+			prepare: func(t *testing.T) (KnowledgeSource, string) {
+				t.Helper()
+				root := t.TempDir()
+				target := filepath.Join(root, "target.md")
+				link := filepath.Join(root, "link.md")
+				writeTestFile(t, target, "hello")
+				if err := os.Symlink(target, link); err != nil {
+					t.Fatalf("Symlink(%q, %q): %v", target, link, err)
+				}
+				return FileSource(link), root
+			},
+			wantErr: ErrUnsupportedSource,
+		},
+		{
+			name: "DirSource skips symlinked files",
+			prepare: func(t *testing.T) (KnowledgeSource, string) {
+				t.Helper()
+				root := t.TempDir()
+				writeTestFile(t, filepath.Join(root, "z.md"), "z")
+				outside := filepath.Join(t.TempDir(), "outside.md")
+				writeTestFile(t, outside, "outside")
+				if err := os.Symlink(outside, filepath.Join(root, "linked.md")); err != nil {
+					t.Fatalf("Symlink(%q, %q): %v", outside, filepath.Join(root, "linked.md"), err)
+				}
+				return DirSource(root), root
+			},
+			wantFiles: []KnowledgeFile{
+				{Path: "z.md", Title: "z"},
+			},
+		},
 	}
 
 	for _, tc := range tests {
