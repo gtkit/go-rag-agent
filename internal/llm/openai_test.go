@@ -188,6 +188,13 @@ func TestEmbeddingConfigValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "non-http scheme base url",
+			mutate: func(cfg *EmbeddingConfig) {
+				cfg.BaseURL = "ftp://api.example.com/v1"
+			},
+			wantErr: true,
+		},
+		{
 			name: "negative timeout",
 			mutate: func(cfg *EmbeddingConfig) {
 				cfg.Timeout = -time.Second

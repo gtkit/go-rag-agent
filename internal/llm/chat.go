@@ -57,5 +57,8 @@ func parseAndValidateBaseURL(raw string) (*url.URL, error) {
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return nil, fmt.Errorf("base url must include scheme and host")
 	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("base url scheme must be http or https")
+	}
 	return parsed, nil
 }
