@@ -8,11 +8,13 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"my-gtkit-package/go-rag-agent/internal/graph"
 	"my-gtkit-package/go-rag-agent/internal/memory"
 	"my-gtkit-package/go-rag-agent/internal/rag"
 	"my-gtkit-package/go-rag-agent/internal/storage"
+	"my-gtkit-package/go-rag-agent/internal/telemetry"
 )
 
 type fakeStore struct {
@@ -84,6 +86,67 @@ func (f *fakeRunner) Ask(_ context.Context, req graph.Request) (string, error) {
 
 func (f *fakeRunner) AskStream(context.Context, graph.Request, graph.StreamEmitter) error {
 	return fmt.Errorf("not implemented in task 3.4")
+}
+
+type callbackRecorder struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *callbackRecorder) OnRetrieveStart(context.Context, string) {
+	r.add("retrieve_start")
+}
+
+func (r *callbackRecorder) OnRetrieveEnd(context.Context, int, error) {
+	r.add("retrieve_end")
+}
+
+func (r *callbackRecorder) OnToolStart(context.Context, string) {
+	r.add("tool_start")
+}
+
+func (r *callbackRecorder) OnToolEnd(context.Context, string, error) {
+	r.add("tool_end")
+}
+
+func (r *callbackRecorder) OnModelStart(context.Context, string) {
+	r.add("model_start")
+}
+
+func (r *callbackRecorder) OnModelEnd(context.Context, string, error) {
+	r.add("model_end")
+}
+
+func (r *callbackRecorder) add(event string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, event)
+}
+
+func (r *callbackRecorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.events)
+}
+
+type blockingSource struct {
+	started chan struct{}
+	release chan struct{}
+	files   []KnowledgeFile
+}
+
+func (s blockingSource) Resolve(ctx context.Context) ([]KnowledgeFile, error) {
+	select {
+	case s.started <- struct{}{}:
+	default:
+	}
+
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return slices.Clone(s.files), nil
 }
 
 func TestGetSessionReusesSameID(t *testing.T) {
@@ -365,5 +428,159 @@ func TestAddKnowledgeIngestsAndUpsertsChunks(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCloseWaitsInFlightAddKnowledge(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	path := filepath.Join(root, "knowledge.md")
+	writeTestFile(t, path, "abcdefgh")
+	chunker, err := rag.NewChunker(4, 0)
+	if err != nil {
+		t.Fatalf("NewChunker() error = %v", err)
+	}
+
+	a := &Agent{
+		store:    &fakeStore{},
+		embedder: &fakeEmbedder{defaultVec: []float32{1, 2, 3}},
+		chunker:  chunker,
+		sessions: make(map[string]*Session),
+	}
+	src := blockingSource{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+		files: []KnowledgeFile{
+			{
+				Path:     path,
+				Title:    "knowledge",
+				Metadata: map[string]string{},
+			},
+		},
+	}
+
+	addErrCh := make(chan error, 1)
+	go func() {
+		addErrCh <- a.AddKnowledge(context.Background(), src)
+	}()
+
+	select {
+	case <-src.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("AddKnowledge() did not reach source resolve")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- a.Close()
+	}()
+
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close() returned early before in-flight AddKnowledge completion: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(src.release)
+
+	select {
+	case err := <-addErrCh:
+		if err != nil {
+			t.Fatalf("AddKnowledge() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AddKnowledge() did not return")
+	}
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() did not wait and return")
+	}
+}
+
+func TestAskRetrievalCallbackOrder(t *testing.T) {
+	t.Parallel()
+
+	recorder := &callbackRecorder{}
+	a := &Agent{
+		cfg: Config{
+			TopK:                5,
+			SimilarityThreshold: 0.5,
+			ChatModel:           "chat-test",
+			MaxHistoryRounds:    8,
+		},
+		store: &fakeStore{
+			searchHits: []storage.SearchHit{
+				{
+					Chunk: storage.ChunkRecord{
+						ChunkID:    "doc:0",
+						SourcePath: "/tmp/doc.md",
+						Title:      "doc",
+						Text:       "alpha beta",
+					},
+					Score: 0.95,
+				},
+			},
+		},
+		embedder:   &fakeEmbedder{defaultVec: []float32{1, 2, 3}},
+		runner:     &fakeRunner{answer: "ok"},
+		dispatcher: telemetry.NewDispatcher([]telemetry.Callback{recorder}),
+		sessions:   make(map[string]*Session),
+	}
+
+	s := a.GetSession("order-test")
+	if _, err := s.Ask(context.Background(), "what is this?"); err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+
+	events := recorder.snapshot()
+	pos := map[string]int{}
+	for i, event := range events {
+		if _, ok := pos[event]; !ok {
+			pos[event] = i
+		}
+	}
+
+	required := []string{"retrieve_start", "tool_start", "retrieve_end", "tool_end"}
+	for _, event := range required {
+		if _, ok := pos[event]; !ok {
+			t.Fatalf("missing callback event %q in %v", event, events)
+		}
+	}
+	if !(pos["retrieve_start"] < pos["tool_start"] &&
+		pos["tool_start"] < pos["retrieve_end"] &&
+		pos["retrieve_end"] < pos["tool_end"]) {
+		t.Fatalf("unexpected callback order: %v", events)
+	}
+}
+
+func TestGetSessionAfterCloseDoesNotMutateRegistry(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{
+		cfg:      Config{MaxHistoryRounds: 8},
+		store:    &fakeStore{},
+		sessions: make(map[string]*Session),
+	}
+
+	_ = a.GetSession("existing")
+	if err := a.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if a.sessions != nil {
+		t.Fatalf("sessions registry should be nil after close, got %d entries", len(a.sessions))
+	}
+
+	closedSession := a.GetSession("new-session")
+	if !closedSession.closed {
+		t.Fatal("GetSession() after close should return a closed session")
+	}
+	if a.sessions != nil {
+		t.Fatalf("GetSession() after close should not mutate registry, got %d entries", len(a.sessions))
 	}
 }

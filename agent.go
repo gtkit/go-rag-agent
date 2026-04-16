@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"my-gtkit-package/go-rag-agent/internal/graph"
 	"my-gtkit-package/go-rag-agent/internal/llm"
@@ -33,7 +34,11 @@ type Agent struct {
 
 	sessionsMu sync.RWMutex
 	sessions   map[string]*Session
-	closed     bool
+
+	closed   atomic.Bool
+	opMu     sync.Mutex
+	opCond   *sync.Cond
+	inFlight int
 }
 
 type rootRetriever struct {
@@ -144,9 +149,26 @@ func New(cfg Config) (*Agent, error) {
 
 // GetSession returns one stable session instance per ID.
 func (a *Agent) GetSession(id string) *Session {
+	if a.isClosed() {
+		return &Session{
+			agent:   a,
+			id:      id,
+			history: memory.NewHistory(a.cfg.MaxHistoryRounds),
+			closed:  true,
+		}
+	}
+
 	a.sessionsMu.Lock()
 	defer a.sessionsMu.Unlock()
 
+	if a.isClosed() {
+		return &Session{
+			agent:   a,
+			id:      id,
+			history: memory.NewHistory(a.cfg.MaxHistoryRounds),
+			closed:  true,
+		}
+	}
 	if session, ok := a.sessions[id]; ok {
 		return session
 	}
@@ -155,7 +177,6 @@ func (a *Agent) GetSession(id string) *Session {
 		agent:   a,
 		id:      id,
 		history: memory.NewHistory(a.cfg.MaxHistoryRounds),
-		closed:  a.closed,
 	}
 	a.sessions[id] = session
 	return session
@@ -163,21 +184,29 @@ func (a *Agent) GetSession(id string) *Session {
 
 // Close releases all sessions and underlying storage resources.
 func (a *Agent) Close() error {
-	a.sessionsMu.Lock()
-	if a.closed {
-		a.sessionsMu.Unlock()
+	if !a.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	a.closed = true
+
+	a.sessionsMu.Lock()
 	sessions := make([]*Session, 0, len(a.sessions))
 	for _, session := range a.sessions {
 		sessions = append(sessions, session)
 	}
+	a.sessions = nil
 	a.sessionsMu.Unlock()
 
 	for _, session := range sessions {
 		_ = session.Close()
 	}
+
+	a.opMu.Lock()
+	a.ensureOpCondLocked()
+	for a.inFlight > 0 {
+		a.opCond.Wait()
+	}
+	a.opMu.Unlock()
+
 	if a.store == nil {
 		return nil
 	}
@@ -267,10 +296,7 @@ func (a *Agent) askLocked(ctx context.Context, s *Session, query string) (Answer
 	if err := ctx.Err(); err != nil {
 		return Answer{}, err
 	}
-	a.sessionsMu.RLock()
-	closed := a.closed
-	a.sessionsMu.RUnlock()
-	if closed {
+	if a.isClosed() {
 		return Answer{}, ErrAgentClosed
 	}
 
@@ -296,6 +322,46 @@ func (a *Agent) askLocked(ctx context.Context, s *Session, query string) (Answer
 		Text:      answerText,
 		Citations: citationsFromHits(hits),
 	}, nil
+}
+
+func (a *Agent) beginOperation() error {
+	if a.isClosed() {
+		return ErrAgentClosed
+	}
+
+	a.opMu.Lock()
+	defer a.opMu.Unlock()
+
+	if a.isClosed() {
+		return ErrAgentClosed
+	}
+	a.ensureOpCondLocked()
+	a.inFlight++
+	return nil
+}
+
+func (a *Agent) endOperation() {
+	a.opMu.Lock()
+	defer a.opMu.Unlock()
+
+	if a.inFlight <= 0 {
+		return
+	}
+	a.inFlight--
+	if a.inFlight == 0 {
+		a.ensureOpCondLocked()
+		a.opCond.Broadcast()
+	}
+}
+
+func (a *Agent) ensureOpCondLocked() {
+	if a.opCond == nil {
+		a.opCond = sync.NewCond(&a.opMu)
+	}
+}
+
+func (a *Agent) isClosed() bool {
+	return a.closed.Load()
 }
 
 func firstNonEmpty(values ...string) string {

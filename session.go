@@ -21,6 +21,11 @@ type Session struct {
 
 // Ask executes the synchronous ask pipeline for this session.
 func (s *Session) Ask(ctx context.Context, query string) (Answer, error) {
+	if err := s.agent.beginOperation(); err != nil {
+		return Answer{}, err
+	}
+	defer s.agent.endOperation()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -56,15 +61,13 @@ func (s *Session) Close() error {
 
 // AddKnowledge ingests one source by loading, chunking, embedding, and upserting records.
 func (a *Agent) AddKnowledge(ctx context.Context, src KnowledgeSource) error {
-	if err := ctx.Err(); err != nil {
+	if err := a.beginOperation(); err != nil {
 		return err
 	}
+	defer a.endOperation()
 
-	a.sessionsMu.RLock()
-	closed := a.closed
-	a.sessionsMu.RUnlock()
-	if closed {
-		return ErrAgentClosed
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	files, err := src.Resolve(ctx)
