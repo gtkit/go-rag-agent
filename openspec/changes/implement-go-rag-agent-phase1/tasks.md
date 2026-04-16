@@ -7,7 +7,7 @@
 
 - [x] 2.1 Implement local file and directory source resolution for `.txt` and `.md` knowledge inputs.
 - [x] 2.2 Implement deterministic document loading, chunking, query normalization, follow-up rewriting, and bounded context assembly.
-- [ ] 2.3 Implement the embedded chromem-backed vector store adapter and its tests.
+- [x] 2.3 Implement the embedded chromem-backed vector store adapter and its tests.
 
 ## 3. Session Memory And Execution
 
