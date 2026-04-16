@@ -27,6 +27,8 @@ const (
 type ChromemStore struct {
 	db         *chromem.DB
 	collection *chromem.Collection
+	// afterAddHook is test-only and runs after add/overwrite, before stale cleanup.
+	afterAddHook func()
 }
 
 func NewChromemStore(cfg Config) (*ChromemStore, error) {
@@ -96,6 +98,7 @@ func (s *ChromemStore) Upsert(ctx context.Context, chunks []ChunkRecord) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("upsert chunks: %w", err)
 	}
+	internalCtx := context.WithoutCancel(ctx)
 
 	parentIDs := make([]string, 0, len(parentIDSet))
 	for parentID := range parentIDSet {
@@ -114,20 +117,15 @@ func (s *ChromemStore) Upsert(ctx context.Context, chunks []ChunkRecord) error {
 		docs = append(docs, doc)
 	}
 
-	if err := s.collection.AddDocuments(ctx, docs, 1); err != nil {
+	if err := s.collection.AddDocuments(internalCtx, docs, 1); err != nil {
 		return fmt.Errorf("upsert chunks: %w", err)
 	}
-
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("upsert chunks: %w", err)
+	if s.afterAddHook != nil {
+		s.afterAddHook()
 	}
 
 	for _, parentID := range parentIDs {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("upsert chunks: %w", err)
-		}
-
-		currentIDs, err := s.listChunkIDsByParent(ctx, parentID, parentIDToQueryEmbedding[parentID])
+		currentIDs, err := s.listChunkIDsByParent(internalCtx, parentID, parentIDToQueryEmbedding[parentID])
 		if err != nil {
 			return fmt.Errorf("list chunk ids by parent %q: %w", parentID, err)
 		}
@@ -142,9 +140,12 @@ func (s *ChromemStore) Upsert(ctx context.Context, chunks []ChunkRecord) error {
 		if len(staleIDs) == 0 {
 			continue
 		}
-		if err := s.collection.Delete(ctx, nil, nil, staleIDs...); err != nil {
+		if err := s.collection.Delete(internalCtx, nil, nil, staleIDs...); err != nil {
 			return fmt.Errorf("delete stale chunks for parent %q: %w", parentID, err)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("upsert chunks: %w", err)
 	}
 
 	return nil

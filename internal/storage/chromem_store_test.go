@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 )
@@ -452,6 +453,107 @@ func TestChromemStoreUpsertCanceledContextPreservesExistingData(t *testing.T) {
 			}
 			if !slices.Equal(gotIDs, tc.wantSearchChunkID) {
 				t.Fatalf("Search() ids = %v, want %v", gotIDs, tc.wantSearchChunkID)
+			}
+		})
+	}
+}
+
+func TestChromemStoreUpsertPostAddCancellationCleansStaleAndReturnsContextError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		existing        []ChunkRecord
+		reingest        []ChunkRecord
+		query           []float32
+		wantIDs         []string
+		wantFirstTitle  string
+		wantCanceledErr error
+	}{
+		{
+			name: "cancel after add still completes cleanup then returns cancellation",
+			existing: []ChunkRecord{
+				{
+					ChunkID:    "doc-a:0",
+					ParentID:   "doc-a",
+					SourcePath: "/kb/a.md",
+					Title:      "A old",
+					Text:       "old text",
+					StartRune:  0,
+					EndRune:    8,
+					Embedding:  []float32{1, 0},
+				},
+				{
+					ChunkID:    "doc-a:1",
+					ParentID:   "doc-a",
+					SourcePath: "/kb/a.md",
+					Title:      "A old",
+					Text:       "old text 2",
+					StartRune:  8,
+					EndRune:    18,
+					Embedding:  []float32{0.9, 0.1},
+				},
+			},
+			reingest: []ChunkRecord{
+				{
+					ChunkID:    "doc-a:0",
+					ParentID:   "doc-a",
+					SourcePath: "/kb/a.md",
+					Title:      "A new",
+					Text:       "new text",
+					StartRune:  0,
+					EndRune:    8,
+					Embedding:  []float32{1, 0},
+				},
+			},
+			query:           []float32{1, 0},
+			wantIDs:         []string{"doc-a:0"},
+			wantFirstTitle:  "A new",
+			wantCanceledErr: context.Canceled,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store, err := NewChromemStore(Config{})
+			if err != nil {
+				t.Fatalf("NewChromemStore() error = %v", err)
+			}
+
+			if err := store.Upsert(context.Background(), tc.existing); err != nil {
+				t.Fatalf("Upsert(existing) error = %v", err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			store.afterAddHook = cancel
+
+			err = store.Upsert(ctx, tc.reingest)
+			if err == nil {
+				t.Fatalf("Upsert(post-add-cancel) error = nil, want non-nil")
+			}
+			if !errors.Is(err, tc.wantCanceledErr) {
+				t.Fatalf("Upsert(post-add-cancel) error = %v, want errors.Is(..., %v)", err, tc.wantCanceledErr)
+			}
+
+			got, err := store.Search(context.Background(), tc.query, 5, -1)
+			if err != nil {
+				t.Fatalf("Search() error = %v", err)
+			}
+			gotIDs := make([]string, 0, len(got))
+			for _, hit := range got {
+				gotIDs = append(gotIDs, hit.Chunk.ChunkID)
+			}
+			if !slices.Equal(gotIDs, tc.wantIDs) {
+				t.Fatalf("Search() ids = %v, want %v", gotIDs, tc.wantIDs)
+			}
+			if len(got) != 1 {
+				t.Fatalf("Search() len = %d, want 1", len(got))
+			}
+			if got[0].Chunk.Title != tc.wantFirstTitle {
+				t.Fatalf("Search() title = %q, want %q", got[0].Chunk.Title, tc.wantFirstTitle)
 			}
 		})
 	}
