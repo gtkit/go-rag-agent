@@ -57,8 +57,16 @@ func BenchmarkChromemStoreSearchInMemory(b *testing.B) {
 
 func benchmarkEmbedding(seed int, dim int) []float32 {
 	row := make([]float32, dim)
+	state := uint64(seed+1)*0x9e3779b97f4a7c15 + 0xbf58476d1ce4e5b9
 	for i := 0; i < dim; i++ {
-		row[i] = float32((seed%31)+1) * float32((i%11)+1) / 100
+		state ^= state >> 30
+		state *= 0xbf58476d1ce4e5b9
+		state ^= state >> 27
+		state *= 0x94d049bb133111eb
+		state ^= state >> 31
+
+		// Deterministic pseudo-random values in [-1, 1], non-collinear across seeds.
+		row[i] = float32(int64(state%2001)-1000) / 1000
 	}
 	return row
 }

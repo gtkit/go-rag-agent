@@ -4,8 +4,16 @@
 
 ## Installation
 
-```bash
-go get my-gtkit-package/go-rag-agent
+Current module path is `my-gtkit-package/go-rag-agent`, which is used as a local/private import path in this repository.
+
+Use it from a checked-out workspace or an internal VCS path that provides the same module path.
+
+Example (consumer module using local checkout):
+
+```go
+require my-gtkit-package/go-rag-agent v0.0.0
+
+replace my-gtkit-package/go-rag-agent => ../go-rag-agent
 ```
 
 ## Quick Start
@@ -17,6 +25,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"time"
 
 	ragagent "my-gtkit-package/go-rag-agent"
@@ -41,7 +51,19 @@ func main() {
 	}
 	defer func() { _ = agent.Close() }()
 
-	if err := agent.AddKnowledge(ctx, ragagent.DirSource("./knowledge")); err != nil {
+	knowledgeDir, err := os.MkdirTemp("", "ragagent-knowledge-*")
+	if err != nil {
+		log.Fatalf("make temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(knowledgeDir) }()
+
+	knowledgeFile := filepath.Join(knowledgeDir, "architecture.md")
+	content := []byte("# Architecture\n\nThis knowledge base is loaded from a temp directory.")
+	if err := os.WriteFile(knowledgeFile, content, 0o600); err != nil {
+		log.Fatalf("write temp knowledge: %v", err)
+	}
+
+	if err := agent.AddKnowledge(ctx, ragagent.DirSource(knowledgeDir)); err != nil {
 		log.Fatalf("add knowledge: %v", err)
 	}
 
@@ -61,19 +83,19 @@ Required:
 - `ChatAPIKey`
 - `EmbeddingModel`
 
-Optional with defaults (`Config.withDefaults`):
+Optional fields (defaults applied by `New` / `Validate`):
 - `DataDir` (`"."`)
 - `TopK` (`5`)
 - `SimilarityThreshold` (`0.6`)
 - `ChunkSize` (`1000`)
 - `MaxHistoryRounds` (`8`)
-- `MaxToolCalls` (`4`)
 - `MaxIterations` (`3`)
 - `RequestTimeout` (`30s`)
 
 Validation notes:
 - `ChunkOverlap` must be `>=0` and `< ChunkSize`.
 - `EnableHybridSearch` and `EnableRerank` are rejected in phase 1.
+- `MaxToolCalls` exists in `Config` but is reserved in phase 1 runtime wiring.
 
 ## Ingestion Workflow
 
@@ -121,4 +143,3 @@ If your emitter callback returns an error, streaming stops and the call returns 
 Phase 1 public API does not expose tool registration.
 
 Current integration point is internal wiring in `agent.go` where `tools.NewRetrievalTool(...)` is passed to `graph.NewReactRunner(...)`. To add custom tools today, extend this wiring in a fork/internal change and keep retrieval tool compatibility.
-
