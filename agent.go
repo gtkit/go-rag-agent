@@ -36,10 +36,11 @@ type Agent struct {
 	sessionsMu sync.RWMutex
 	sessions   map[string]*Session
 
-	closed   atomic.Bool
-	opMu     sync.Mutex
-	opCond   *sync.Cond
-	inFlight int
+	closed        atomic.Bool
+	callbackDepth atomic.Int32
+	opMu          sync.Mutex
+	opCond        *sync.Cond
+	inFlight      int
 }
 
 type rootRetriever struct {
@@ -185,6 +186,9 @@ func (a *Agent) GetSession(id string) *Session {
 
 // Close releases all sessions and underlying storage resources.
 func (a *Agent) Close() error {
+	if a.callbackDepth.Load() > 0 {
+		return fmt.Errorf("ragagent: agent close from callback is not supported")
+	}
 	if !a.closed.CompareAndSwap(false, true) {
 		return nil
 	}
@@ -331,6 +335,16 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, e
 
 	emitEvent := func(event StreamEvent) error {
 		event.Timestamp = time.Now()
+		s.mu.Lock()
+		s.emitting = true
+		s.mu.Unlock()
+		a.callbackDepth.Add(1)
+		defer func() {
+			a.callbackDepth.Add(-1)
+			s.mu.Lock()
+			s.emitting = false
+			s.mu.Unlock()
+		}()
 		return emit(event)
 	}
 	emitError := func(runErr error) error {

@@ -3,11 +3,14 @@ package rag
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
 func TestAssembleContext(t *testing.T) {
 	t.Parallel()
+
+	const testEvidenceBudget = 4000
 
 	tests := []struct {
 		name          string
@@ -78,6 +81,15 @@ func TestAssembleContext(t *testing.T) {
 			wantContext:   "[c1] 你好",
 			wantContextLE: 8,
 		},
+		{
+			name: "first chunk is truncated to fit evidence budget",
+			chunks: []Chunk{
+				{ChunkID: "c1", Text: strings.Repeat("a", testEvidenceBudget)},
+			},
+			maxChars:      testEvidenceBudget,
+			wantChunkIDs:  []string{"c1"},
+			wantContextLE: testEvidenceBudget,
+		},
 	}
 
 	for _, tc := range tests {
@@ -106,7 +118,7 @@ func TestAssembleContext(t *testing.T) {
 			if !slices.Equal(gotIDs, tc.wantChunkIDs) {
 				t.Fatalf("AssembleContext() chunk ids = %v, want %v", gotIDs, tc.wantChunkIDs)
 			}
-			if gotContext != tc.wantContext {
+			if tc.wantContext != "" && gotContext != tc.wantContext {
 				t.Fatalf("AssembleContext() context = %q, want %q", gotContext, tc.wantContext)
 			}
 			if got := len([]rune(gotContext)); got > tc.wantContextLE {

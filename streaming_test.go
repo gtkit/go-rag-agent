@@ -244,10 +244,10 @@ func TestSessionAskStreamRunnerFailureEmitsErrorAndModelTelemetry(t *testing.T) 
 						},
 					},
 				},
-				embedder:    &fakeEmbedder{defaultVec: []float32{1, 2, 3}},
-				runner:      runner,
-				dispatcher:  telemetry.NewDispatcher([]telemetry.Callback{recorder}),
-				sessions:    make(map[string]*Session),
+				embedder:   &fakeEmbedder{defaultVec: []float32{1, 2, 3}},
+				runner:     runner,
+				dispatcher: telemetry.NewDispatcher([]telemetry.Callback{recorder}),
+				sessions:   make(map[string]*Session),
 			}
 			s := a.GetSession("runner-fail")
 
@@ -607,6 +607,108 @@ func TestSessionAskStreamEmitterCanMutateSessionStateWithoutDeadlock(t *testing.
 
 			tc.assertAfterDone(t, s)
 		})
+	}
+}
+
+func TestSessionAskStreamCallbackReentryFailsFast(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeStreamingRunner{
+		askStreamFn: func(_ context.Context, _ graph.Request, emit graph.StreamEmitter) error {
+			if err := emit(graph.Event{Type: graph.EventAnswerChunk, Content: "chunk", Step: 1}); err != nil {
+				return err
+			}
+			return emit(graph.Event{Type: graph.EventDone, Step: 2})
+		},
+	}
+	a := &Agent{
+		cfg: Config{
+			TopK:                5,
+			SimilarityThreshold: 0.5,
+			MaxHistoryRounds:    8,
+		},
+		store: &fakeStore{
+			searchHits: []storage.SearchHit{
+				{
+					Chunk: storage.ChunkRecord{
+						ChunkID:    "doc:0",
+						SourcePath: "/tmp/doc.md",
+						Title:      "doc",
+						Text:       "evidence text",
+					},
+					Score: 0.99,
+				},
+			},
+		},
+		embedder: &fakeEmbedder{defaultVec: []float32{1, 2, 3}},
+		runner:   runner,
+		sessions: make(map[string]*Session),
+	}
+	s := a.GetSession("callback-reentry")
+
+	err := s.AskStream(context.Background(), "stream", func(event StreamEvent) error {
+		if event.Type != EventAnswerChunk {
+			return nil
+		}
+		_, callErr := s.Ask(context.Background(), "reenter")
+		if !errors.Is(callErr, errSessionCallbackReentry) {
+			t.Fatalf("reentrant Ask() error = %v, want %v", callErr, errSessionCallbackReentry)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("AskStream() error = %v", err)
+	}
+}
+
+func TestSessionAskStreamCallbackAgentCloseFailsFast(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeStreamingRunner{
+		askStreamFn: func(_ context.Context, _ graph.Request, emit graph.StreamEmitter) error {
+			if err := emit(graph.Event{Type: graph.EventAnswerChunk, Content: "chunk", Step: 1}); err != nil {
+				return err
+			}
+			return emit(graph.Event{Type: graph.EventDone, Step: 2})
+		},
+	}
+	a := &Agent{
+		cfg: Config{
+			TopK:                5,
+			SimilarityThreshold: 0.5,
+			MaxHistoryRounds:    8,
+		},
+		store: &fakeStore{
+			searchHits: []storage.SearchHit{
+				{
+					Chunk: storage.ChunkRecord{
+						ChunkID:    "doc:0",
+						SourcePath: "/tmp/doc.md",
+						Title:      "doc",
+						Text:       "evidence text",
+					},
+					Score: 0.99,
+				},
+			},
+		},
+		embedder: &fakeEmbedder{defaultVec: []float32{1, 2, 3}},
+		runner:   runner,
+		sessions: make(map[string]*Session),
+	}
+	s := a.GetSession("callback-close")
+
+	err := s.AskStream(context.Background(), "stream", func(event StreamEvent) error {
+		if event.Type != EventAnswerChunk {
+			return nil
+		}
+		callErr := a.Close()
+		if callErr == nil || !strings.Contains(callErr.Error(), "callback") {
+			t.Fatalf("Agent.Close() error = %v, want callback-related error", callErr)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("AskStream() error = %v", err)
 	}
 }
 

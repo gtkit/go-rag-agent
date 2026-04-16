@@ -2,6 +2,7 @@ package ragagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -12,13 +13,14 @@ import (
 
 // Session stores one conversation state bound to an Agent.
 type Session struct {
-	agent   *Agent
-	id      string
-	execMu  sync.Mutex
-	mu      sync.Mutex
-	history *memory.History
-	closed  bool
+	agent        *Agent
+	id           string
+	execMu       sync.Mutex
+	mu           sync.Mutex
+	history      *memory.History
+	closed       bool
 	executing    bool
+	emitting     bool
 	pendingClear bool
 	pendingClose bool
 
@@ -26,8 +28,13 @@ type Session struct {
 	beforeAskLock func()
 }
 
+var errSessionCallbackReentry = errors.New("ragagent: session callback reentry is not supported")
+
 // Ask executes the synchronous ask pipeline for this session.
 func (s *Session) Ask(ctx context.Context, query string) (Answer, error) {
+	if s.isEmittingCallback() {
+		return Answer{}, errSessionCallbackReentry
+	}
 	if err := s.agent.beginOperation(); err != nil {
 		return Answer{}, err
 	}
@@ -53,6 +60,9 @@ func (s *Session) Ask(ctx context.Context, query string) (Answer, error) {
 
 // AskStream executes the streaming ask pipeline for this session.
 func (s *Session) AskStream(ctx context.Context, query string, emit func(StreamEvent) error) error {
+	if s.isEmittingCallback() {
+		return errSessionCallbackReentry
+	}
 	if err := s.agent.beginOperation(); err != nil {
 		return err
 	}
@@ -113,6 +123,12 @@ func (s *Session) beginExecution() error {
 	}
 	s.executing = true
 	return nil
+}
+
+func (s *Session) isEmittingCallback() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.emitting
 }
 
 func (s *Session) endExecution(query string, answer string, appendHistory bool) {

@@ -25,12 +25,30 @@ func AssembleContext(chunks []Chunk, maxChars int) ([]Chunk, string, error) {
 		}
 		seen[chunk.ChunkID] = struct{}{}
 
-		segment := fmt.Sprintf("[%s] %s", chunk.ChunkID, chunk.Text)
+		segmentText := chunk.Text
+		segment := fmt.Sprintf("[%s] %s", chunk.ChunkID, segmentText)
 		next := segment
+		sep := ""
 		if builder.Len() > 0 {
-			next = "\n\n" + segment
+			sep = "\n\n"
+			next = sep + segment
 		}
 		nextRuneCount := len([]rune(next))
+		if contextRuneCount+nextRuneCount > maxChars {
+			if len(kept) == 0 {
+				prefix := fmt.Sprintf("[%s] ", chunk.ChunkID)
+				available := maxChars - len([]rune(sep)) - len([]rune(prefix))
+				if available > 0 {
+					textRunes := []rune(chunk.Text)
+					if len(textRunes) > available {
+						textRunes = textRunes[:available]
+					}
+					segmentText = string(textRunes)
+					next = sep + prefix + segmentText
+					nextRuneCount = len([]rune(next))
+				}
+			}
+		}
 		if contextRuneCount+nextRuneCount > maxChars {
 			if len(kept) > 0 {
 				break
