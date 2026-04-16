@@ -3,25 +3,16 @@ package ragagent
 import (
 	"errors"
 	"testing"
-	"time"
 )
 
 func TestConfigValidate(t *testing.T) {
 	t.Parallel()
 
 	valid := Config{
-		ChatModel:           "gpt-4.1-mini",
-		ChatBaseURL:         "https://api.example.com/v1",
-		ChatAPIKey:          "test-key",
-		EmbeddingModel:      "text-embedding-3-small",
-		RequestTimeout:      time.Second,
-		ChunkSize:           1000,
-		ChunkOverlap:        100,
-		TopK:                5,
-		MaxHistoryRounds:    8,
-		MaxToolCalls:        4,
-		MaxIterations:       3,
-		SimilarityThreshold: 0.6,
+		ChatModel:      "gpt-4.1-mini",
+		ChatBaseURL:    "https://api.example.com/v1",
+		ChatAPIKey:     "test-key",
+		EmbeddingModel: "text-embedding-3-small",
 	}
 
 	tests := []struct {
@@ -30,7 +21,7 @@ func TestConfigValidate(t *testing.T) {
 		wantErr error
 	}{
 		{
-			name:    "valid minimal config",
+			name:    "valid minimal config relying on defaults",
 			mutate:  nil,
 			wantErr: nil,
 		},
@@ -44,6 +35,7 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "invalid chunk overlap",
 			mutate: func(cfg *Config) {
+				cfg.ChunkSize = 100
 				cfg.ChunkOverlap = cfg.ChunkSize
 			},
 			wantErr: ErrInvalidConfig,

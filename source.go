@@ -15,6 +15,7 @@ type fileSource struct {
 	path string
 }
 
+// FileSource returns a knowledge source that resolves exactly one file path.
 func FileSource(path string) KnowledgeSource {
 	return fileSource{path: path}
 }
@@ -46,6 +47,7 @@ type dirSource struct {
 	path string
 }
 
+// DirSource returns a knowledge source that recursively resolves files in a directory.
 func DirSource(path string) KnowledgeSource {
 	return dirSource{path: path}
 }
@@ -54,9 +56,16 @@ func (s dirSource) Resolve(ctx context.Context) ([]KnowledgeFile, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	info, err := os.Stat(s.path)
+	if err != nil {
+		return nil, fmt.Errorf("stat source dir %q: %w", s.path, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("dir source is not a directory %q: %w", s.path, ErrUnsupportedSource)
+	}
 
 	files := make([]KnowledgeFile, 0)
-	err := filepath.WalkDir(s.path, func(path string, d fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(s.path, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}

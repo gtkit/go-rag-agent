@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// Config defines the root agent configuration contract for phase 1.
 type Config struct {
 	ChatModel   string
 	ChatBaseURL string
@@ -29,6 +30,7 @@ type Config struct {
 	Callbacks           []Callback
 }
 
+// withDefaults returns a copy of c with phase-1 defaults applied.
 func (c Config) withDefaults() Config {
 	if c.DataDir == "" {
 		c.DataDir = "."
@@ -57,7 +59,10 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
+// Validate checks whether c satisfies the phase-1 configuration contract.
 func (c Config) Validate() error {
+	c = c.withDefaults()
+
 	if c.ChatModel == "" {
 		return fmt.Errorf("chat model is required: %w", ErrInvalidConfig)
 	}
