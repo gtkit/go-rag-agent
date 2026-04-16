@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
+	"strings"
 
 	chromem "github.com/philippgille/chromem-go"
 )
@@ -13,11 +15,12 @@ import (
 const (
 	defaultCollectionName = "knowledge"
 
-	metadataKeySourcePath = "source_path"
-	metadataKeyTitle      = "title"
-	metadataKeyParentID   = "parent_id"
-	metadataKeyStartRune  = "start_rune"
-	metadataKeyEndRune    = "end_rune"
+	metadataKeySourcePath = "rag_source_path"
+	metadataKeyTitle      = "rag_title"
+	metadataKeyParentID   = "rag_parent_id"
+	metadataKeyStartRune  = "rag_start_rune"
+	metadataKeyEndRune    = "rag_end_rune"
+	metadataKeyUserPrefix = "rag_meta_"
 )
 
 // ChromemStore is a chromem-backed VectorStore.
@@ -62,15 +65,38 @@ func (s *ChromemStore) Upsert(ctx context.Context, chunks []ChunkRecord) error {
 		return nil
 	}
 
-	docs := make([]chromem.Document, 0, len(chunks))
+	seenChunkIDs := make(map[string]struct{}, len(chunks))
+	parentIDSet := make(map[string]struct{}, len(chunks))
 	for _, chunk := range chunks {
 		if chunk.ChunkID == "" {
 			return fmt.Errorf("chunk id is empty")
 		}
+		if chunk.ParentID == "" {
+			return fmt.Errorf("parent id is empty for chunk %q", chunk.ChunkID)
+		}
 		if len(chunk.Embedding) == 0 {
 			return fmt.Errorf("embedding is empty for chunk %q", chunk.ChunkID)
 		}
+		if _, exists := seenChunkIDs[chunk.ChunkID]; exists {
+			return fmt.Errorf("duplicate chunk id %q in upsert batch", chunk.ChunkID)
+		}
+		seenChunkIDs[chunk.ChunkID] = struct{}{}
+		parentIDSet[chunk.ParentID] = struct{}{}
+	}
 
+	parentIDs := make([]string, 0, len(parentIDSet))
+	for parentID := range parentIDSet {
+		parentIDs = append(parentIDs, parentID)
+	}
+	sort.Strings(parentIDs)
+	for _, parentID := range parentIDs {
+		if err := s.collection.Delete(ctx, map[string]string{metadataKeyParentID: parentID}, nil); err != nil {
+			return fmt.Errorf("delete existing chunks for parent %q: %w", parentID, err)
+		}
+	}
+
+	docs := make([]chromem.Document, 0, len(chunks))
+	for _, chunk := range chunks {
 		doc := chromem.Document{
 			ID:        chunk.ChunkID,
 			Metadata:  chunkToMetadata(chunk),
@@ -128,14 +154,14 @@ func (s *ChromemStore) Close() error {
 
 func chunkToMetadata(chunk ChunkRecord) map[string]string {
 	metadata := make(map[string]string, len(chunk.Metadata)+5)
-	for key, value := range chunk.Metadata {
-		metadata[key] = value
-	}
 	metadata[metadataKeySourcePath] = chunk.SourcePath
 	metadata[metadataKeyTitle] = chunk.Title
 	metadata[metadataKeyParentID] = chunk.ParentID
 	metadata[metadataKeyStartRune] = strconv.Itoa(chunk.StartRune)
 	metadata[metadataKeyEndRune] = strconv.Itoa(chunk.EndRune)
+	for key, value := range chunk.Metadata {
+		metadata[metadataKeyUserPrefix+key] = value
+	}
 	return metadata
 }
 
@@ -148,23 +174,20 @@ func resultToChunk(result chromem.Result) ChunkRecord {
 		Text:       result.Content,
 		StartRune:  parseIntMetadata(result.Metadata, metadataKeyStartRune),
 		EndRune:    parseIntMetadata(result.Metadata, metadataKeyEndRune),
-		Metadata:   filterExtraMetadata(result.Metadata),
+		Metadata:   extractUserMetadata(result.Metadata),
 		Embedding:  slices.Clone(result.Embedding),
 	}
 }
 
-func filterExtraMetadata(metadata map[string]string) map[string]string {
+func extractUserMetadata(metadata map[string]string) map[string]string {
 	if len(metadata) == 0 {
 		return nil
 	}
 
 	extra := make(map[string]string, len(metadata))
 	for key, value := range metadata {
-		switch key {
-		case metadataKeySourcePath, metadataKeyTitle, metadataKeyParentID, metadataKeyStartRune, metadataKeyEndRune:
-			continue
-		default:
-			extra[key] = value
+		if strings.HasPrefix(key, metadataKeyUserPrefix) {
+			extra[strings.TrimPrefix(key, metadataKeyUserPrefix)] = value
 		}
 	}
 	if len(extra) == 0 {
