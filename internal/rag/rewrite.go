@@ -20,6 +20,9 @@ func RewriteFollowUp(query string, history []string) string {
 		if item == "" {
 			continue
 		}
+		if !isConcreteHistoryItem(item) {
+			continue
+		}
 		return item + " " + normalizedQuery
 	}
 	return normalizedQuery
@@ -42,6 +45,37 @@ func looksReferential(query string) bool {
 			if word == term {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func isConcreteHistoryItem(item string) bool {
+	if looksReferential(item) {
+		return false
+	}
+	ambiguousPhrases := map[string]struct{}{
+		"tell me more": {},
+		"go on":        {},
+		"continue":     {},
+		"more details": {},
+	}
+	if _, ok := ambiguousPhrases[item]; ok {
+		return false
+	}
+	words := strings.FieldsFunc(item, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsPunct(r)
+	})
+	if len(words) == 0 {
+		return false
+	}
+	nonInformative := map[string]struct{}{
+		"tell": {}, "me": {}, "more": {}, "go": {}, "on": {}, "continue": {}, "details": {},
+		"what": {}, "about": {}, "please": {}, "the": {}, "a": {}, "an": {},
+	}
+	for _, word := range words {
+		if _, ok := nonInformative[word]; !ok {
+			return true
 		}
 	}
 	return false

@@ -47,6 +47,46 @@ func TestLoadFile(t *testing.T) {
 			},
 		},
 		{
+			name: "stable identity from normalized path but preserves source path spelling",
+			prepare: func(t *testing.T) (context.Context, string, string, map[string]string) {
+				t.Helper()
+				root := t.TempDir()
+				path := filepath.Join(root, "dir", "knowledge.md")
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatalf("MkdirAll(%q): %v", filepath.Dir(path), err)
+				}
+				if err := os.WriteFile(path, []byte("hello world"), 0o644); err != nil {
+					t.Fatalf("WriteFile(%q): %v", path, err)
+				}
+
+				altPath := filepath.Join(root, "dir", "..", "dir", "knowledge.md")
+				docA, err := LoadFile(context.Background(), path, "Knowledge", nil)
+				if err != nil {
+					t.Fatalf("LoadFile(path) error: %v", err)
+				}
+				docB, err := LoadFile(context.Background(), altPath, "Knowledge", nil)
+				if err != nil {
+					t.Fatalf("LoadFile(altPath) error: %v", err)
+				}
+				if docA.ID != docB.ID {
+					t.Fatalf("stable ID mismatch: %q vs %q", docA.ID, docB.ID)
+				}
+				if docA.SourcePath != path {
+					t.Fatalf("docA.SourcePath = %q, want %q", docA.SourcePath, path)
+				}
+				if docB.SourcePath != altPath {
+					t.Fatalf("docB.SourcePath = %q, want %q", docB.SourcePath, altPath)
+				}
+				return context.Background(), path, "Knowledge", nil
+			},
+			assertion: func(t *testing.T, _ Document, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("LoadFile() error = %v", err)
+				}
+			},
+		},
+		{
 			name: "canceled context before read",
 			prepare: func(t *testing.T) (context.Context, string, string, map[string]string) {
 				t.Helper()

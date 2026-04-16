@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"errors"
 	"slices"
 	"testing"
 )
@@ -16,6 +17,7 @@ func TestAssembleContext(t *testing.T) {
 		wantChunkIDs  []string
 		wantContext   string
 		wantContextLE int
+		wantErrIs     error
 	}{
 		{
 			name: "deduplicate by chunk id and preserve first occurrence",
@@ -45,16 +47,36 @@ func TestAssembleContext(t *testing.T) {
 			chunks: []Chunk{
 				{ChunkID: "c1", Text: "alpha"},
 			},
-			maxChars: 0,
-			wantErr:  true,
+			maxChars:  0,
+			wantErr:   true,
+			wantErrIs: ErrInvalidContextLimit,
 		},
 		{
 			name: "error when no chunk can fit",
 			chunks: []Chunk{
 				{ChunkID: "c1", Text: "long-content"},
 			},
-			maxChars: 3,
-			wantErr:  true,
+			maxChars:  3,
+			wantErr:   true,
+			wantErrIs: ErrNoContextAssembled,
+		},
+		{
+			name:      "error when input chunk list is empty",
+			chunks:    nil,
+			maxChars:  16,
+			wantErr:   true,
+			wantErrIs: ErrNoContextAssembled,
+		},
+		{
+			name: "max chars uses runes not bytes",
+			chunks: []Chunk{
+				{ChunkID: "c1", Text: "你好"},
+				{ChunkID: "c2", Text: "世界"},
+			},
+			maxChars:      8,
+			wantChunkIDs:  []string{"c1"},
+			wantContext:   "[c1] 你好",
+			wantContextLE: 8,
 		},
 	}
 
@@ -67,6 +89,9 @@ func TestAssembleContext(t *testing.T) {
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("AssembleContext() error = nil, want non-nil")
+				}
+				if tc.wantErrIs != nil && !errors.Is(err, tc.wantErrIs) {
+					t.Fatalf("AssembleContext() error = %v, want errors.Is(..., %v)", err, tc.wantErrIs)
 				}
 				return
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // Document is the self-contained RAG-layer source document model.
@@ -20,6 +21,10 @@ func LoadFile(ctx context.Context, path string, title string, metadata map[strin
 	if err := ctx.Err(); err != nil {
 		return Document{}, err
 	}
+	stableID, err := normalizeStablePath(path)
+	if err != nil {
+		return Document{}, fmt.Errorf("normalize path %q: %w", path, err)
+	}
 
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -27,12 +32,20 @@ func LoadFile(ctx context.Context, path string, title string, metadata map[strin
 	}
 
 	return Document{
-		ID:         path,
+		ID:         stableID,
 		SourcePath: path,
 		Title:      title,
 		Metadata:   cloneMetadata(metadata),
 		Content:    string(content),
 	}, nil
+}
+
+func normalizeStablePath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(abs), nil
 }
 
 func cloneMetadata(input map[string]string) map[string]string {

@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 )
@@ -38,6 +39,28 @@ func TestChunkerSplit(t *testing.T) {
 			},
 			wantTexts: []string{"abcd", "defg", "ghi"},
 			wantRange: [][2]int{{0, 4}, {3, 7}, {6, 9}},
+		},
+		{
+			name:    "unicode content uses rune offsets not bytes",
+			size:    3,
+			overlap: 1,
+			doc: Document{
+				ID:      "unicode-doc-id",
+				Content: "你好世界再见",
+			},
+			wantTexts: []string{"你好世", "世界再", "再见"},
+			wantRange: [][2]int{{0, 3}, {2, 5}, {4, 6}},
+		},
+		{
+			name:    "empty content yields no chunks",
+			size:    4,
+			overlap: 1,
+			doc: Document{
+				ID:      "d-empty",
+				Content: "",
+			},
+			wantTexts: []string{},
+			wantRange: [][2]int{},
 		},
 		{
 			name:    "invalid settings are rejected",
@@ -79,6 +102,14 @@ func TestChunkerSplit(t *testing.T) {
 			}
 			if !slices.Equal(gotRanges, tc.wantRange) {
 				t.Fatalf("Split() ranges = %v, want %v", gotRanges, tc.wantRange)
+			}
+			if len(chunks) > 0 {
+				for i, chunk := range chunks {
+					wantChunkID := fmt.Sprintf("%s:%d", tc.doc.ID, i)
+					if chunk.ChunkID != wantChunkID {
+						t.Fatalf("Split() chunk[%d].ChunkID = %q, want %q", i, chunk.ChunkID, wantChunkID)
+					}
+				}
 			}
 		})
 	}
