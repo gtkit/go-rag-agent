@@ -334,6 +334,15 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, e
 		event.Timestamp = time.Now()
 		return emit(event)
 	}
+	emitError := func(runErr error) error {
+		if runErr == nil {
+			return nil
+		}
+		if err := emitEvent(StreamEvent{Type: EventError, Err: runErr}); err != nil {
+			return err
+		}
+		return runErr
+	}
 
 	rewrittenQuery := rag.RewriteFollowUp(query, s.history.LastUserQueries())
 	if err := emitEvent(StreamEvent{Type: EventRetrieveStart, Content: rewrittenQuery}); err != nil {
@@ -345,11 +354,13 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, e
 
 	hits, evidenceText, err := a.retrieve(ctx, rewrittenQuery)
 	if err != nil {
-		emitErr := emitEvent(StreamEvent{Type: EventError, Err: err})
-		if emitErr != nil {
+		if emitErr := emitEvent(StreamEvent{Type: EventRetrieveEnd, Err: err}); emitErr != nil {
 			return emitErr
 		}
-		return err
+		if emitErr := emitEvent(StreamEvent{Type: EventToolEnd, ToolName: retrieveToolName, Err: err}); emitErr != nil {
+			return emitErr
+		}
+		return emitError(err)
 	}
 	if err := emitEvent(StreamEvent{Type: EventRetrieveEnd}); err != nil {
 		return err
@@ -367,6 +378,8 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, e
 	}
 
 	var answerBuilder strings.Builder
+	var emitterErr error
+	a.dispatcher.OnModelStart(ctx, a.cfg.ChatModel)
 	err = a.runner.AskStream(ctx, graph.Request{
 		Query:        rewrittenQuery,
 		History:      s.history.Turns(),
@@ -375,22 +388,34 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, e
 		switch event.Type {
 		case graph.EventAnswerChunk:
 			answerBuilder.WriteString(event.Content)
-			return emitEvent(StreamEvent{
+			emittedErr := emitEvent(StreamEvent{
 				Type:    EventAnswerChunk,
 				Content: event.Content,
 				Step:    event.Step,
 			})
+			if emittedErr != nil {
+				emitterErr = emittedErr
+			}
+			return emittedErr
 		case graph.EventDone:
-			return emitEvent(StreamEvent{
+			emittedErr := emitEvent(StreamEvent{
 				Type: EventDone,
 				Step: event.Step,
 			})
+			if emittedErr != nil {
+				emitterErr = emittedErr
+			}
+			return emittedErr
 		default:
 			return nil
 		}
 	})
+	a.dispatcher.OnModelEnd(ctx, a.cfg.ChatModel, err)
 	if err != nil {
-		return err
+		if emitterErr != nil && errors.Is(err, emitterErr) {
+			return err
+		}
+		return emitError(err)
 	}
 
 	s.history.Append(query, answerBuilder.String())

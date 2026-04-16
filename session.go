@@ -14,11 +14,12 @@ import (
 type Session struct {
 	agent   *Agent
 	id      string
+	execMu  sync.Mutex
 	mu      sync.Mutex
 	history *memory.History
 	closed  bool
 
-	// beforeAskLock is test-only and runs after operation admission, before s.mu.Lock.
+	// beforeAskLock is test-only and runs after operation admission, before execution lock.
 	beforeAskLock func()
 }
 
@@ -33,10 +34,9 @@ func (s *Session) Ask(ctx context.Context, query string) (Answer, error) {
 		s.beforeAskLock()
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+	if s.isClosed() {
 		return Answer{}, ErrSessionClosed
 	}
 	return s.agent.askLocked(ctx, s, query)
@@ -53,10 +53,9 @@ func (s *Session) AskStream(ctx context.Context, query string, emit func(StreamE
 		s.beforeAskLock()
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+	if s.isClosed() {
 		return ErrSessionClosed
 	}
 	return s.agent.askStreamLocked(ctx, s, query, emit)
@@ -84,6 +83,12 @@ func (s *Session) Close() error {
 
 	s.closed = true
 	return nil
+}
+
+func (s *Session) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
 }
 
 // AddKnowledge ingests one source by loading, chunking, embedding, and upserting records.

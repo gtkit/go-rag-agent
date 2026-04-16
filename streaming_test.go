@@ -13,6 +13,7 @@ import (
 
 	"my-gtkit-package/go-rag-agent/internal/graph"
 	"my-gtkit-package/go-rag-agent/internal/storage"
+	"my-gtkit-package/go-rag-agent/internal/telemetry"
 )
 
 type fakeStreamingRunner struct {
@@ -91,6 +92,8 @@ func TestSessionAskStreamSequenceAndRetrievalOwnership(t *testing.T) {
 			wantEventTypes: []EventType{
 				EventRetrieveStart,
 				EventToolStart,
+				EventRetrieveEnd,
+				EventToolEnd,
 				EventError,
 			},
 			wantRunnerCalled:    false,
@@ -190,6 +193,104 @@ func TestSessionAskStreamSequenceAndRetrievalOwnership(t *testing.T) {
 			afterTurns := len(s.history.Turns())
 			if got := afterTurns - beforeTurns; got != tc.wantHistoryLenDelta {
 				t.Fatalf("history delta = %d, want %d", got, tc.wantHistoryLenDelta)
+			}
+		})
+	}
+}
+
+func TestSessionAskStreamRunnerFailureEmitsErrorAndModelTelemetry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+	}{
+		{
+			name: "runner error emits event error and model lifecycle telemetry",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			runnerErr := errors.New("model stream failed")
+			recorder := &callbackRecorder{}
+			runner := &fakeStreamingRunner{
+				askStreamFn: func(_ context.Context, _ graph.Request, emit graph.StreamEmitter) error {
+					if err := emit(graph.Event{Type: graph.EventAnswerChunk, Content: "partial", Step: 1}); err != nil {
+						return err
+					}
+					return runnerErr
+				},
+			}
+			a := &Agent{
+				cfg: Config{
+					TopK:                5,
+					SimilarityThreshold: 0.5,
+					ChatModel:           "chat-test",
+					MaxHistoryRounds:    8,
+				},
+				store: &fakeStore{
+					searchHits: []storage.SearchHit{
+						{
+							Chunk: storage.ChunkRecord{
+								ChunkID:    "doc:0",
+								SourcePath: "/tmp/doc.md",
+								Title:      "doc",
+								Text:       "evidence text",
+							},
+							Score: 0.99,
+						},
+					},
+				},
+				embedder:    &fakeEmbedder{defaultVec: []float32{1, 2, 3}},
+				runner:      runner,
+				dispatcher:  telemetry.NewDispatcher([]telemetry.Callback{recorder}),
+				sessions:    make(map[string]*Session),
+			}
+			s := a.GetSession("runner-fail")
+
+			var gotEvents []StreamEvent
+			err := s.AskStream(context.Background(), "stream fail", func(event StreamEvent) error {
+				gotEvents = append(gotEvents, event)
+				return nil
+			})
+			if !containsErr(err, runnerErr) {
+				t.Fatalf("AskStream() error = %v, want contains %v", err, runnerErr)
+			}
+
+			gotTypes := make([]EventType, 0, len(gotEvents))
+			for _, event := range gotEvents {
+				gotTypes = append(gotTypes, event.Type)
+			}
+			wantTypes := []EventType{
+				EventRetrieveStart,
+				EventToolStart,
+				EventRetrieveEnd,
+				EventToolEnd,
+				EventCitation,
+				EventAnswerChunk,
+				EventError,
+			}
+			if !slices.Equal(gotTypes, wantTypes) {
+				t.Fatalf("event types = %v, want %v", gotTypes, wantTypes)
+			}
+
+			telemetryEvents := recorder.snapshot()
+			pos := map[string]int{}
+			for i, event := range telemetryEvents {
+				if _, ok := pos[event]; !ok {
+					pos[event] = i
+				}
+			}
+			for _, must := range []string{"model_start", "model_end"} {
+				if _, ok := pos[must]; !ok {
+					t.Fatalf("missing telemetry %q in %v", must, telemetryEvents)
+				}
+			}
+			if !(pos["model_start"] < pos["model_end"]) {
+				t.Fatalf("model telemetry order invalid: %v", telemetryEvents)
 			}
 		})
 	}
@@ -357,8 +458,14 @@ func TestSessionAskStreamCancellationNoLeak(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 
 			errCh := make(chan error, 1)
+			eventsCh := make(chan []StreamEvent, 1)
 			go func() {
-				errCh <- s.AskStream(ctx, "cancel me", func(StreamEvent) error { return nil })
+				var gotEvents []StreamEvent
+				errCh <- s.AskStream(ctx, "cancel me", func(event StreamEvent) error {
+					gotEvents = append(gotEvents, event)
+					return nil
+				})
+				eventsCh <- gotEvents
 			}()
 
 			select {
@@ -375,6 +482,10 @@ func TestSessionAskStreamCancellationNoLeak(t *testing.T) {
 				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("AskStream() did not return after cancellation")
+			}
+			gotEvents := <-eventsCh
+			if len(gotEvents) == 0 || gotEvents[len(gotEvents)-1].Type != EventError {
+				t.Fatalf("expected final event type %q on cancellation, got %v", EventError, gotEvents)
 			}
 
 			workerDone := make(chan struct{})
@@ -396,6 +507,86 @@ func TestSessionAskStreamCancellationNoLeak(t *testing.T) {
 				time.Sleep(20 * time.Millisecond)
 			}
 			t.Fatalf("goroutines did not settle near baseline=%d, current=%d", baseline, runtime.NumGoroutine())
+		})
+	}
+}
+
+func TestSessionAskStreamEmitterCanMutateSessionStateWithoutDeadlock(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+	}{
+		{
+			name: "emitter close and clear history do not deadlock",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			runner := &fakeStreamingRunner{
+				askStreamFn: func(_ context.Context, _ graph.Request, emit graph.StreamEmitter) error {
+					if err := emit(graph.Event{Type: graph.EventAnswerChunk, Content: "chunk", Step: 1}); err != nil {
+						return err
+					}
+					return emit(graph.Event{Type: graph.EventDone, Step: 2})
+				},
+			}
+			a := &Agent{
+				cfg: Config{
+					TopK:                5,
+					SimilarityThreshold: 0.5,
+					MaxHistoryRounds:    8,
+				},
+				store: &fakeStore{
+					searchHits: []storage.SearchHit{
+						{
+							Chunk: storage.ChunkRecord{
+								ChunkID:    "doc:0",
+								SourcePath: "/tmp/doc.md",
+								Title:      "doc",
+								Text:       "evidence text",
+							},
+							Score: 0.99,
+						},
+					},
+				},
+				embedder: &fakeEmbedder{defaultVec: []float32{1, 2, 3}},
+				runner:   runner,
+				sessions: make(map[string]*Session),
+			}
+			s := a.GetSession("callback-state")
+
+			done := make(chan error, 1)
+			go func() {
+				done <- s.AskStream(context.Background(), "state mutate", func(event StreamEvent) error {
+					if event.Type == EventAnswerChunk {
+						if err := s.ClearHistory(context.Background()); err != nil {
+							return err
+						}
+						if err := s.Close(); err != nil {
+							return err
+						}
+					}
+					return nil
+				})
+			}()
+
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("AskStream() error = %v", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("AskStream() deadlocked while emitter mutated session state")
+			}
+
+			if _, err := s.Ask(context.Background(), "next"); !errors.Is(err, ErrSessionClosed) {
+				t.Fatalf("Ask() error after callback close = %v, want %v", err, ErrSessionClosed)
+			}
 		})
 	}
 }
