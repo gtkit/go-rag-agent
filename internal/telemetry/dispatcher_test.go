@@ -78,3 +78,72 @@ func TestDispatcherFanOut(t *testing.T) {
 		})
 	}
 }
+
+func TestDispatcherSkipsNilCallbacks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+	}{
+		{
+			name: "nil callbacks do not panic and valid callbacks still fire",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			valid := &callbackRecorder{}
+			dispatcher := NewDispatcher([]Callback{nil, valid, nil})
+
+			assertNotPanics(t, func() {
+				dispatcher.OnRetrieveStart(context.Background(), "q")
+			})
+
+			if valid.retrieveStart != 1 {
+				t.Fatalf("valid callback retrieveStart = %d, want 1", valid.retrieveStart)
+			}
+		})
+	}
+}
+
+func TestNewDispatcherCopiesInputSlice(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+	}{
+		{
+			name: "mutating input callback slice does not affect dispatcher",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			valid := &callbackRecorder{}
+			input := []Callback{valid}
+			dispatcher := NewDispatcher(input)
+			input[0] = nil
+
+			dispatcher.OnToolStart(context.Background(), "search")
+			if valid.toolStart != 1 {
+				t.Fatalf("valid callback toolStart = %d, want 1", valid.toolStart)
+			}
+		})
+	}
+}
+
+func assertNotPanics(t *testing.T, fn func()) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("unexpected panic: %v", r)
+		}
+	}()
+	fn()
+}

@@ -114,3 +114,50 @@ func TestHistoryTurnsReturnsCopyAndClear(t *testing.T) {
 		})
 	}
 }
+
+func TestHistoryClearReleasesTurnContents(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		maxRounds int
+		turns     []Turn
+	}{
+		{
+			name:      "zeroes retained turn data in backing array",
+			maxRounds: 3,
+			turns: []Turn{
+				{User: "user-a", Assistant: "assistant-a"},
+				{User: "user-b", Assistant: "assistant-b"},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := NewHistory(tc.maxRounds)
+			for _, turn := range tc.turns {
+				h.Append(turn.User, turn.Assistant)
+			}
+
+			if cap(h.turns) == 0 {
+				t.Fatalf("precondition failed: cap(h.turns)=0, want >0")
+			}
+
+			h.Clear()
+
+			if len(h.turns) != 0 {
+				t.Fatalf("len(h.turns) after Clear() = %d, want 0", len(h.turns))
+			}
+
+			for i, turn := range h.turns[:cap(h.turns)] {
+				if turn != (Turn{}) {
+					t.Fatalf("h.turns backing element %d = %+v, want zero value", i, turn)
+				}
+			}
+		})
+	}
+}

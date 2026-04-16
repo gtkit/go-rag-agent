@@ -47,7 +47,7 @@ func (h *History) Append(user, assistant string) {
 func (h *History) Clear() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.turns = h.turns[:0]
+	h.turns = make([]Turn, 0, max(h.maxRounds, 0))
 }
 
 // Turns returns a copy of current stored turns.

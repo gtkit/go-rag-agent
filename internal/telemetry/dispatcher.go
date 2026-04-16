@@ -19,8 +19,15 @@ type Dispatcher struct {
 
 // NewDispatcher creates a dispatcher with a defensive callback copy.
 func NewDispatcher(callbacks []Callback) Dispatcher {
+	filtered := make([]Callback, 0, len(callbacks))
+	for _, cb := range callbacks {
+		if cb == nil {
+			continue
+		}
+		filtered = append(filtered, cb)
+	}
 	return Dispatcher{
-		callbacks: append([]Callback(nil), callbacks...),
+		callbacks: filtered,
 	}
 }
 
