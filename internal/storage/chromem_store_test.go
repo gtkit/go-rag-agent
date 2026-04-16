@@ -367,6 +367,96 @@ func TestChromemStoreUpsertReplacesParentChunksAndPreventsStaleResults(t *testin
 	}
 }
 
+func TestChromemStoreUpsertCanceledContextPreservesExistingData(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		existing          []ChunkRecord
+		canceledUpsert    []ChunkRecord
+		query             []float32
+		topK              int
+		wantSearchChunkID []string
+	}{
+		{
+			name: "canceled context before upsert keeps prior chunks searchable",
+			existing: []ChunkRecord{
+				{
+					ChunkID:    "doc-a:0",
+					ParentID:   "doc-a",
+					SourcePath: "/kb/a.md",
+					Title:      "A old",
+					Text:       "old text",
+					StartRune:  0,
+					EndRune:    8,
+					Embedding:  []float32{1, 0},
+				},
+				{
+					ChunkID:    "doc-a:1",
+					ParentID:   "doc-a",
+					SourcePath: "/kb/a.md",
+					Title:      "A old",
+					Text:       "old text 2",
+					StartRune:  8,
+					EndRune:    18,
+					Embedding:  []float32{0.9, 0.1},
+				},
+			},
+			canceledUpsert: []ChunkRecord{
+				{
+					ChunkID:    "doc-a:0",
+					ParentID:   "doc-a",
+					SourcePath: "/kb/a.md",
+					Title:      "A new",
+					Text:       "new text",
+					StartRune:  0,
+					EndRune:    8,
+					Embedding:  []float32{1, 0},
+				},
+			},
+			query:             []float32{1, 0},
+			topK:              5,
+			wantSearchChunkID: []string{"doc-a:0", "doc-a:1"},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store, err := NewChromemStore(Config{})
+			if err != nil {
+				t.Fatalf("NewChromemStore() error = %v", err)
+			}
+
+			if err := store.Upsert(context.Background(), tc.existing); err != nil {
+				t.Fatalf("Upsert(existing) error = %v", err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			err = store.Upsert(ctx, tc.canceledUpsert)
+			if err == nil {
+				t.Fatalf("Upsert(canceled) error = nil, want non-nil")
+			}
+
+			got, err := store.Search(context.Background(), tc.query, tc.topK, -1)
+			if err != nil {
+				t.Fatalf("Search() error = %v", err)
+			}
+
+			gotIDs := make([]string, 0, len(got))
+			for _, hit := range got {
+				gotIDs = append(gotIDs, hit.Chunk.ChunkID)
+			}
+			if !slices.Equal(gotIDs, tc.wantSearchChunkID) {
+				t.Fatalf("Search() ids = %v, want %v", gotIDs, tc.wantSearchChunkID)
+			}
+		})
+	}
+}
+
 func TestChromemStoreUpsertReplaceSameIDSemantics(t *testing.T) {
 	t.Parallel()
 

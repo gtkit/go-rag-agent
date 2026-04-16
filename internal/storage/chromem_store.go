@@ -67,6 +67,8 @@ func (s *ChromemStore) Upsert(ctx context.Context, chunks []ChunkRecord) error {
 
 	seenChunkIDs := make(map[string]struct{}, len(chunks))
 	parentIDSet := make(map[string]struct{}, len(chunks))
+	parentIDToChunkIDSet := make(map[string]map[string]struct{}, len(chunks))
+	parentIDToQueryEmbedding := make(map[string][]float32, len(chunks))
 	for _, chunk := range chunks {
 		if chunk.ChunkID == "" {
 			return fmt.Errorf("chunk id is empty")
@@ -82,6 +84,17 @@ func (s *ChromemStore) Upsert(ctx context.Context, chunks []ChunkRecord) error {
 		}
 		seenChunkIDs[chunk.ChunkID] = struct{}{}
 		parentIDSet[chunk.ParentID] = struct{}{}
+		if _, ok := parentIDToChunkIDSet[chunk.ParentID]; !ok {
+			parentIDToChunkIDSet[chunk.ParentID] = make(map[string]struct{})
+		}
+		parentIDToChunkIDSet[chunk.ParentID][chunk.ChunkID] = struct{}{}
+		if _, ok := parentIDToQueryEmbedding[chunk.ParentID]; !ok {
+			parentIDToQueryEmbedding[chunk.ParentID] = slices.Clone(chunk.Embedding)
+		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("upsert chunks: %w", err)
 	}
 
 	parentIDs := make([]string, 0, len(parentIDSet))
@@ -89,11 +102,6 @@ func (s *ChromemStore) Upsert(ctx context.Context, chunks []ChunkRecord) error {
 		parentIDs = append(parentIDs, parentID)
 	}
 	sort.Strings(parentIDs)
-	for _, parentID := range parentIDs {
-		if err := s.collection.Delete(ctx, map[string]string{metadataKeyParentID: parentID}, nil); err != nil {
-			return fmt.Errorf("delete existing chunks for parent %q: %w", parentID, err)
-		}
-	}
 
 	docs := make([]chromem.Document, 0, len(chunks))
 	for _, chunk := range chunks {
@@ -109,6 +117,36 @@ func (s *ChromemStore) Upsert(ctx context.Context, chunks []ChunkRecord) error {
 	if err := s.collection.AddDocuments(ctx, docs, 1); err != nil {
 		return fmt.Errorf("upsert chunks: %w", err)
 	}
+
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("upsert chunks: %w", err)
+	}
+
+	for _, parentID := range parentIDs {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("upsert chunks: %w", err)
+		}
+
+		currentIDs, err := s.listChunkIDsByParent(ctx, parentID, parentIDToQueryEmbedding[parentID])
+		if err != nil {
+			return fmt.Errorf("list chunk ids by parent %q: %w", parentID, err)
+		}
+
+		staleIDs := make([]string, 0, len(currentIDs))
+		currentSet := parentIDToChunkIDSet[parentID]
+		for _, currentID := range currentIDs {
+			if _, ok := currentSet[currentID]; !ok {
+				staleIDs = append(staleIDs, currentID)
+			}
+		}
+		if len(staleIDs) == 0 {
+			continue
+		}
+		if err := s.collection.Delete(ctx, nil, nil, staleIDs...); err != nil {
+			return fmt.Errorf("delete stale chunks for parent %q: %w", parentID, err)
+		}
+	}
+
 	return nil
 }
 
@@ -207,4 +245,22 @@ func parseIntMetadata(metadata map[string]string, key string) int {
 		return 0
 	}
 	return value
+}
+
+func (s *ChromemStore) listChunkIDsByParent(ctx context.Context, parentID string, queryEmbedding []float32) ([]string, error) {
+	count := s.collection.Count()
+	if count == 0 {
+		return nil, nil
+	}
+
+	results, err := s.collection.QueryEmbedding(ctx, queryEmbedding, count, map[string]string{metadataKeyParentID: parentID}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("query parent chunks: %w", err)
+	}
+
+	ids := make([]string, 0, len(results))
+	for _, result := range results {
+		ids = append(ids, result.ID)
+	}
+	return ids, nil
 }
