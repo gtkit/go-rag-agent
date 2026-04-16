@@ -19,5 +19,5 @@
 
 ## 4. Documentation And Verification
 
-- [ ] 4.1 Add README, examples, GoDoc example coverage, and benchmarks for chunking and retrieval paths.
+- [x] 4.1 Add README, examples, GoDoc example coverage, and benchmarks for chunking and retrieval paths.
 - [ ] 4.2 Run lint, vet, race tests, benchmarks, and strict OpenSpec validation, then update task status to complete.
