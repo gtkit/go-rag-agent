@@ -31,6 +31,19 @@ func TestFileAndDirSourceResolve(t *testing.T) {
 			},
 		},
 		{
+			name: "FileSource on a .md file returns 1 file",
+			prepare: func(t *testing.T) (KnowledgeSource, string) {
+				t.Helper()
+				root := t.TempDir()
+				path := filepath.Join(root, "readme.md")
+				writeTestFile(t, path, "hello")
+				return FileSource(path), root
+			},
+			wantFiles: []KnowledgeFile{
+				{Path: "readme.md", Title: "readme"},
+			},
+		},
+		{
 			name: "DirSource recursively picks up .txt and .md files and returns deterministic order",
 			prepare: func(t *testing.T) (KnowledgeSource, string) {
 				t.Helper()
