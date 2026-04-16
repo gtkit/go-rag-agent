@@ -9,6 +9,7 @@ import (
 
 // NewOpenAIChatModel creates an OpenAI-compatible Eino chat model.
 func NewOpenAIChatModel(ctx context.Context, cfg ChatConfig) (ChatModel, error) {
+	cfg = cfg.normalized()
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate chat config: %w", err)
 	}

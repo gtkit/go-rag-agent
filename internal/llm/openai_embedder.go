@@ -13,7 +13,8 @@ type OpenAIEmbedder struct {
 }
 
 // NewOpenAIEmbedder creates an OpenAI-compatible embedding adapter.
-func NewOpenAIEmbedder(ctx context.Context, cfg EmbeddingConfig) (*OpenAIEmbedder, error) {
+func NewOpenAIEmbedder(ctx context.Context, cfg EmbeddingConfig) (Embedder, error) {
+	cfg = cfg.normalized()
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate embedding config: %w", err)
 	}
@@ -33,11 +34,16 @@ func NewOpenAIEmbedder(ctx context.Context, cfg EmbeddingConfig) (*OpenAIEmbedde
 
 // EmbedTexts embeds texts and converts values to float32 vectors.
 func (e *OpenAIEmbedder) EmbedTexts(ctx context.Context, texts []string) ([][]float32, error) {
+	normalizedTexts, err := normalizeEmbeddingTexts(texts)
+	if err != nil {
+		return nil, fmt.Errorf("validate embedding input: %w", err)
+	}
+
 	if e == nil || e.client == nil {
 		return nil, fmt.Errorf("openai embedder is nil")
 	}
 
-	rows, err := e.client.EmbedStrings(ctx, texts)
+	rows, err := e.client.EmbedStrings(ctx, normalizedTexts)
 	if err != nil {
 		return nil, fmt.Errorf("embed texts: %w", err)
 	}

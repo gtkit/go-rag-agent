@@ -2,6 +2,7 @@ package llm
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -19,19 +20,42 @@ type ChatConfig struct {
 	Timeout time.Duration
 }
 
+func (c ChatConfig) normalized() ChatConfig {
+	c.Model = strings.TrimSpace(c.Model)
+	c.BaseURL = strings.TrimSpace(c.BaseURL)
+	c.APIKey = strings.TrimSpace(c.APIKey)
+	return c
+}
+
 // Validate checks whether the chat config is complete and valid.
 func (c ChatConfig) Validate() error {
-	if strings.TrimSpace(c.Model) == "" {
+	c = c.normalized()
+
+	if c.Model == "" {
 		return fmt.Errorf("chat model is required")
 	}
-	if strings.TrimSpace(c.BaseURL) == "" {
+	if c.BaseURL == "" {
 		return fmt.Errorf("chat base url is required")
 	}
-	if strings.TrimSpace(c.APIKey) == "" {
+	if _, err := parseAndValidateBaseURL(c.BaseURL); err != nil {
+		return fmt.Errorf("chat base url is invalid: %w", err)
+	}
+	if c.APIKey == "" {
 		return fmt.Errorf("chat api key is required")
 	}
 	if c.Timeout <= 0 {
 		return fmt.Errorf("chat timeout must be positive")
 	}
 	return nil
+}
+
+func parseAndValidateBaseURL(raw string) (*url.URL, error) {
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse base url: %w", err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("base url must include scheme and host")
+	}
+	return parsed, nil
 }
