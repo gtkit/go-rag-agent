@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
@@ -11,6 +12,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"my-gtkit-package/go-rag-agent/internal/llm"
+	"my-gtkit-package/go-rag-agent/internal/memory"
 	"my-gtkit-package/go-rag-agent/internal/tools"
 )
 
@@ -18,6 +20,7 @@ const defaultMaxIterations = 12
 
 // ReactRunner executes graph ask calls with Eino ReAct.
 type ReactRunner struct {
+	model llm.ChatModel
 	agent *react.Agent
 }
 
@@ -26,30 +29,46 @@ func NewReactRunner(ctx context.Context, model llm.ChatModel, retrievalTool *too
 	if model == nil {
 		return nil, fmt.Errorf("chat model is required")
 	}
-	if retrievalTool == nil {
-		return nil, fmt.Errorf("retrieval tool is required")
-	}
 	if maxIterations <= 0 {
 		maxIterations = defaultMaxIterations
 	}
 
-	agent, err := react.NewAgent(ctx, &react.AgentConfig{
-		ToolCallingModel: model,
-		ToolsConfig: compose.ToolsNodeConfig{
-			Tools: []einotool.BaseTool{retrievalTool},
-		},
-		MaxStep: maxIterations,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create react agent: %w", err)
+	var agentRunner *react.Agent
+	if retrievalTool != nil {
+		// ReAct streaming assumes our current OpenAI-compatible adapters expose tool calls in stream-first chunks.
+		agent, err := react.NewAgent(ctx, &react.AgentConfig{
+			ToolCallingModel: model,
+			ToolsConfig: compose.ToolsNodeConfig{
+				Tools: []einotool.BaseTool{retrievalTool},
+			},
+			MaxStep: maxIterations,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create react agent: %w", err)
+		}
+		agentRunner = agent
 	}
 
-	return &ReactRunner{agent: agent}, nil
+	return &ReactRunner{
+		model: model,
+		agent: agentRunner,
+	}, nil
 }
 
 // Ask returns the final text answer.
 func (r *ReactRunner) Ask(ctx context.Context, req Request) (string, error) {
 	msgs := buildPromptMessages(req.History, req.EvidenceText, req.Query)
+	if strings.TrimSpace(req.EvidenceText) != "" {
+		msg, err := r.model.Generate(ctx, msgs)
+		if err != nil {
+			return "", fmt.Errorf("generate model answer: %w", err)
+		}
+		return msg.Content, nil
+	}
+	if r.agent == nil {
+		return "", fmt.Errorf("react agent is required when evidence text is empty")
+	}
+
 	msg, err := r.agent.Generate(ctx, msgs)
 	if err != nil {
 		return "", fmt.Errorf("generate react answer: %w", err)
@@ -60,12 +79,27 @@ func (r *ReactRunner) Ask(ctx context.Context, req Request) (string, error) {
 // AskStream emits answer chunks and done event.
 func (r *ReactRunner) AskStream(ctx context.Context, req Request, emit StreamEmitter) error {
 	msgs := buildPromptMessages(req.History, req.EvidenceText, req.Query)
+	if strings.TrimSpace(req.EvidenceText) != "" {
+		stream, err := r.model.Stream(ctx, msgs)
+		if err != nil {
+			return fmt.Errorf("start model stream: %w", err)
+		}
+		defer stream.Close()
+		return emitStream(stream, emit)
+	}
+	if r.agent == nil {
+		return fmt.Errorf("react agent is required when evidence text is empty")
+	}
+
 	stream, err := r.agent.Stream(ctx, msgs)
 	if err != nil {
 		return fmt.Errorf("start react stream: %w", err)
 	}
 	defer stream.Close()
+	return emitStream(stream, emit)
+}
 
+func emitStream(stream *schema.StreamReader[*schema.Message], emit StreamEmitter) error {
 	step := 0
 	for {
 		chunk, recvErr := stream.Recv()
@@ -93,15 +127,23 @@ func (r *ReactRunner) AskStream(ctx context.Context, req Request, emit StreamEmi
 	}
 }
 
-func buildPromptMessages(history []string, evidenceText, query string) []*schema.Message {
-	msgs := make([]*schema.Message, 0, len(history)+3)
+func buildPromptMessages(history []memory.Turn, evidenceText, query string) []*schema.Message {
+	msgs := make([]*schema.Message, 0, len(history)*2+3)
 	msgs = append(msgs, schema.SystemMessage("Answer with retrieved evidence first. If evidence is insufficient, say so explicitly."))
 
-	for _, h := range history {
-		msgs = append(msgs, schema.UserMessage(h))
+	for _, turn := range history {
+		if strings.TrimSpace(turn.User) != "" {
+			msgs = append(msgs, schema.UserMessage(turn.User))
+		}
+		if strings.TrimSpace(turn.Assistant) != "" {
+			msgs = append(msgs, &schema.Message{
+				Role:    schema.Assistant,
+				Content: turn.Assistant,
+			})
+		}
 	}
-	if evidenceText != "" {
-		msgs = append(msgs, schema.SystemMessage("Retrieved evidence:\n"+evidenceText))
+	if strings.TrimSpace(evidenceText) != "" {
+		msgs = append(msgs, schema.UserMessage("Relevant context:\n"+evidenceText))
 	}
 	msgs = append(msgs, schema.UserMessage(query))
 	return msgs

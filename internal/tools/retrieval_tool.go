@@ -60,6 +60,10 @@ func (t *RetrievalTool) InvokableRun(ctx context.Context, argumentsInJSON string
 	if err := gtjson.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return "", fmt.Errorf("decode retrieval args: %w", err)
 	}
+	args.Query = strings.TrimSpace(args.Query)
+	if args.Query == "" {
+		return "", fmt.Errorf("query is required")
+	}
 
 	hits, err := t.retriever.Search(ctx, args.Query)
 	if err != nil {

@@ -1,11 +1,15 @@
 package graph
 
-import "context"
+import (
+	"context"
+
+	"my-gtkit-package/go-rag-agent/internal/memory"
+)
 
 // Request is the internal graph ask input.
 type Request struct {
 	Query        string
-	History      []string
+	History      []memory.Turn
 	EvidenceText string
 }
 

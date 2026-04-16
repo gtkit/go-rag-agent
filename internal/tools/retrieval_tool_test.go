@@ -92,3 +92,49 @@ func TestRetrievalToolInvokableRunReturnsEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestRetrievalToolInvokableRunValidateInput(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		argsJSON   string
+		wantErr    bool
+		wantErrSub string
+	}{
+		{
+			name:       "rejects invalid json",
+			argsJSON:   "{bad",
+			wantErr:    true,
+			wantErrSub: "decode retrieval args",
+		},
+		{
+			name:       "rejects blank query",
+			argsJSON:   `{"query":"   "}`,
+			wantErr:    true,
+			wantErrSub: "query is required",
+		},
+		{
+			name:       "accepts non-empty query",
+			argsJSON:   `{"query":"rag"}`,
+			wantErr:    false,
+			wantErrSub: "",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tool := NewRetrievalTool(fakeRetriever{})
+			_, err := tool.InvokableRun(context.Background(), tt.argsJSON)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("InvokableRun() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErrSub != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErrSub)) {
+				t.Fatalf("InvokableRun() error = %v, want contains %q", err, tt.wantErrSub)
+			}
+		})
+	}
+}
