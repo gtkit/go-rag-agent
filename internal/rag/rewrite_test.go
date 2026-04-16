@@ -35,6 +35,24 @@ func TestRewriteFollowUp(t *testing.T) {
 			history: []string{"tell me more", "what about that?"},
 			want:    "what about it?",
 		},
+		{
+			name:    "demonstrative noun phrase is not treated as follow up",
+			query:   "can this library work offline?",
+			history: []string{"explain vector database"},
+			want:    "can this library work offline?",
+		},
+		{
+			name:    "plural demonstrative noun phrase is not treated as follow up",
+			query:   "are these apis stable?",
+			history: []string{"explain vector database"},
+			want:    "are these apis stable?",
+		},
+		{
+			name:    "demonstrative pronoun style follow up remains referential",
+			query:   "what about this?",
+			history: []string{"explain vector database"},
+			want:    "explain vector database what about this?",
+		},
 	}
 
 	for _, tc := range tests {

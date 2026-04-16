@@ -2,6 +2,8 @@ package ragagent
 
 import (
 	"fmt"
+	"my-gtkit-package/go-rag-agent/internal/llm"
+	"strings"
 	"time"
 )
 
@@ -32,14 +34,9 @@ type Config struct {
 
 // withDefaults returns a copy of c with phase-1 defaults applied.
 func (c Config) withDefaults() Config {
-	if c.DataDir == "" {
-		c.DataDir = "."
-	}
+	c = c.normalized()
 	if c.TopK == 0 {
 		c.TopK = 5
-	}
-	if c.SimilarityThreshold == 0 {
-		c.SimilarityThreshold = 0.6
 	}
 	if c.ChunkSize == 0 {
 		c.ChunkSize = 1000
@@ -59,21 +56,36 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
+func (c Config) normalized() Config {
+	c.ChatModel = strings.TrimSpace(c.ChatModel)
+	c.ChatBaseURL = strings.TrimSpace(c.ChatBaseURL)
+	c.ChatAPIKey = strings.TrimSpace(c.ChatAPIKey)
+	c.EmbeddingModel = strings.TrimSpace(c.EmbeddingModel)
+	c.EmbeddingBaseURL = strings.TrimSpace(c.EmbeddingBaseURL)
+	c.EmbeddingAPIKey = strings.TrimSpace(c.EmbeddingAPIKey)
+	c.DataDir = strings.TrimSpace(c.DataDir)
+	return c
+}
+
 // Validate checks whether c satisfies the phase-1 configuration contract.
 func (c Config) Validate() error {
 	c = c.withDefaults()
 
-	if c.ChatModel == "" {
-		return fmt.Errorf("chat model is required: %w", ErrInvalidConfig)
+	if err := (llm.ChatConfig{
+		Model:   c.ChatModel,
+		BaseURL: c.ChatBaseURL,
+		APIKey:  c.ChatAPIKey,
+		Timeout: c.RequestTimeout,
+	}).Validate(); err != nil {
+		return fmt.Errorf("chat config is invalid: %w: %w", err, ErrInvalidConfig)
 	}
-	if c.ChatBaseURL == "" {
-		return fmt.Errorf("chat base url is required: %w", ErrInvalidConfig)
-	}
-	if c.ChatAPIKey == "" {
-		return fmt.Errorf("chat api key is required: %w", ErrInvalidConfig)
-	}
-	if c.EmbeddingModel == "" {
-		return fmt.Errorf("embedding model is required: %w", ErrInvalidConfig)
+	if err := (llm.EmbeddingConfig{
+		Model:   c.EmbeddingModel,
+		BaseURL: firstNonEmpty(c.EmbeddingBaseURL, c.ChatBaseURL),
+		APIKey:  firstNonEmpty(c.EmbeddingAPIKey, c.ChatAPIKey),
+		Timeout: c.RequestTimeout,
+	}).Validate(); err != nil {
+		return fmt.Errorf("embedding config is invalid: %w: %w", err, ErrInvalidConfig)
 	}
 	if c.RequestTimeout <= 0 {
 		return fmt.Errorf("request timeout must be positive: %w", ErrInvalidConfig)

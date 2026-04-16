@@ -84,15 +84,15 @@ Required:
 - `EmbeddingModel`
 
 Optional fields (defaults applied by `New` / `Validate`):
-- `DataDir` (`"."`)
 - `TopK` (`5`)
-- `SimilarityThreshold` (`0.6`)
 - `ChunkSize` (`1000`)
 - `MaxHistoryRounds` (`8`)
 - `MaxIterations` (`3`)
 - `RequestTimeout` (`30s`)
 
 Validation notes:
+- Empty `DataDir` keeps in-memory vector storage (no forced `"."` persistence path).
+- `SimilarityThreshold: 0` is preserved as-is (effectively disables score cutoff filtering).
 - `ChunkOverlap` must be `>=0` and `< ChunkSize`.
 - `EnableHybridSearch` and `EnableRerank` are rejected in phase 1.
 - `MaxToolCalls` exists in `Config` but is reserved in phase 1 runtime wiring.

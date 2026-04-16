@@ -34,20 +34,39 @@ func normalizeQueryText(input string) string {
 }
 
 func looksReferential(query string) bool {
-	referentialTerms := []string{
-		"it", "that", "this", "they", "them", "those", "these", "he", "she", "him", "her", "former", "latter",
-	}
 	words := strings.FieldsFunc(query, func(r rune) bool {
 		return unicode.IsSpace(r) || unicode.IsPunct(r)
 	})
-	for _, word := range words {
-		for _, term := range referentialTerms {
-			if word == term {
+	for i, word := range words {
+		switch word {
+		case "it", "they", "them", "he", "she", "him", "her", "former", "latter":
+			return true
+		case "this", "that", "these", "those":
+			if isDemonstrativePronounUsage(words, i) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func isDemonstrativePronounUsage(words []string, idx int) bool {
+	if idx < 0 || idx >= len(words) {
+		return false
+	}
+	if idx == len(words)-1 {
+		return true
+	}
+
+	next := words[idx+1]
+	pronounFollowers := map[string]struct{}{
+		"about": {}, "is": {}, "are": {}, "was": {}, "were": {}, "am": {}, "be": {}, "been": {}, "being": {},
+		"do": {}, "does": {}, "did": {}, "can": {}, "could": {}, "will": {}, "would": {}, "should": {},
+		"may": {}, "might": {}, "must": {}, "has": {}, "have": {}, "had": {}, "one": {}, "ones": {},
+		"to": {}, "for": {}, "of": {}, "with": {}, "in": {}, "on": {}, "at": {}, "as": {},
+	}
+	_, ok := pronounFollowers[next]
+	return ok
 }
 
 func isConcreteHistoryItem(item string) bool {
