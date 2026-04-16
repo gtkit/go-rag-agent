@@ -5,6 +5,7 @@ import (
 	"errors"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -150,7 +151,7 @@ func TestSessionAskStreamSequenceAndRetrievalOwnership(t *testing.T) {
 				return nil
 			})
 			if tc.wantErr != nil {
-				if err == nil || !slices.Contains([]error{err}, err) || !containsErr(err, tc.wantErr) {
+				if !containsErr(err, tc.wantErr) {
 					t.Fatalf("AskStream() error = %v, want contains %v", err, tc.wantErr)
 				}
 			} else if err != nil {
@@ -403,18 +404,5 @@ func containsErr(got error, want error) bool {
 	if got == nil || want == nil {
 		return false
 	}
-	return errors.Is(got, want) || (want.Error() != "" && containsText(got.Error(), want.Error()))
-}
-
-func containsText(s string, sub string) bool {
-	return len(sub) > 0 && (len(s) >= len(sub)) && (s == sub || len(s) > len(sub) && containsAt(s, sub))
-}
-
-func containsAt(s string, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
+	return errors.Is(got, want) || strings.Contains(got.Error(), want.Error())
 }
