@@ -42,6 +42,26 @@ func (s *Session) Ask(ctx context.Context, query string) (Answer, error) {
 	return s.agent.askLocked(ctx, s, query)
 }
 
+// AskStream executes the streaming ask pipeline for this session.
+func (s *Session) AskStream(ctx context.Context, query string, emit func(StreamEvent) error) error {
+	if err := s.agent.beginOperation(); err != nil {
+		return err
+	}
+	defer s.agent.endOperation()
+
+	if s.beforeAskLock != nil {
+		s.beforeAskLock()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrSessionClosed
+	}
+	return s.agent.askStreamLocked(ctx, s, query, emit)
+}
+
 // ClearHistory removes all stored turns for this session.
 func (s *Session) ClearHistory(ctx context.Context) error {
 	s.mu.Lock()

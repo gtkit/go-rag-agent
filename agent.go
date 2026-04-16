@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"my-gtkit-package/go-rag-agent/internal/graph"
 	"my-gtkit-package/go-rag-agent/internal/llm"
@@ -319,6 +320,81 @@ func (a *Agent) askLocked(ctx context.Context, s *Session, query string) (Answer
 		Text:      answerText,
 		Citations: citationsFromHits(hits),
 	}, nil
+}
+
+func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, emit func(StreamEvent) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if emit == nil {
+		return fmt.Errorf("stream emitter is required")
+	}
+
+	emitEvent := func(event StreamEvent) error {
+		event.Timestamp = time.Now()
+		return emit(event)
+	}
+
+	rewrittenQuery := rag.RewriteFollowUp(query, s.history.LastUserQueries())
+	if err := emitEvent(StreamEvent{Type: EventRetrieveStart, Content: rewrittenQuery}); err != nil {
+		return err
+	}
+	if err := emitEvent(StreamEvent{Type: EventToolStart, ToolName: retrieveToolName}); err != nil {
+		return err
+	}
+
+	hits, evidenceText, err := a.retrieve(ctx, rewrittenQuery)
+	if err != nil {
+		emitErr := emitEvent(StreamEvent{Type: EventError, Err: err})
+		if emitErr != nil {
+			return emitErr
+		}
+		return err
+	}
+	if err := emitEvent(StreamEvent{Type: EventRetrieveEnd}); err != nil {
+		return err
+	}
+	if err := emitEvent(StreamEvent{Type: EventToolEnd, ToolName: retrieveToolName}); err != nil {
+		return err
+	}
+
+	citations := citationsFromHits(hits)
+	for i := range citations {
+		citation := citations[i]
+		if err := emitEvent(StreamEvent{Type: EventCitation, Citation: &citation}); err != nil {
+			return err
+		}
+	}
+
+	var answerBuilder strings.Builder
+	err = a.runner.AskStream(ctx, graph.Request{
+		Query:        rewrittenQuery,
+		History:      s.history.Turns(),
+		EvidenceText: evidenceText,
+	}, func(event graph.Event) error {
+		switch event.Type {
+		case graph.EventAnswerChunk:
+			answerBuilder.WriteString(event.Content)
+			return emitEvent(StreamEvent{
+				Type:    EventAnswerChunk,
+				Content: event.Content,
+				Step:    event.Step,
+			})
+		case graph.EventDone:
+			return emitEvent(StreamEvent{
+				Type: EventDone,
+				Step: event.Step,
+			})
+		default:
+			return nil
+		}
+	})
+	if err != nil {
+		return err
+	}
+
+	s.history.Append(query, answerBuilder.String())
+	return nil
 }
 
 func (a *Agent) beginOperation() error {
