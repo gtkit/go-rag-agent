@@ -515,10 +515,39 @@ func TestSessionAskStreamEmitterCanMutateSessionStateWithoutDeadlock(t *testing.
 	t.Parallel()
 
 	tests := []struct {
-		name string
+		name            string
+		callback        func(*Session, StreamEvent) error
+		assertAfterDone func(*testing.T, *Session)
 	}{
 		{
-			name: "emitter close and clear history do not deadlock",
+			name: "emitter clear history is applied after stream completion",
+			callback: func(s *Session, event StreamEvent) error {
+				if event.Type == EventAnswerChunk {
+					return s.ClearHistory(context.Background())
+				}
+				return nil
+			},
+			assertAfterDone: func(t *testing.T, s *Session) {
+				t.Helper()
+				if got := len(s.history.Turns()); got != 0 {
+					t.Fatalf("history turns = %d, want 0 after pending clear", got)
+				}
+			},
+		},
+		{
+			name: "emitter close is applied after stream completion",
+			callback: func(s *Session, event StreamEvent) error {
+				if event.Type == EventAnswerChunk {
+					return s.Close()
+				}
+				return nil
+			},
+			assertAfterDone: func(t *testing.T, s *Session) {
+				t.Helper()
+				if _, err := s.Ask(context.Background(), "next"); !errors.Is(err, ErrSessionClosed) {
+					t.Fatalf("Ask() error after callback close = %v, want %v", err, ErrSessionClosed)
+				}
+			},
 		},
 	}
 
@@ -563,15 +592,7 @@ func TestSessionAskStreamEmitterCanMutateSessionStateWithoutDeadlock(t *testing.
 			done := make(chan error, 1)
 			go func() {
 				done <- s.AskStream(context.Background(), "state mutate", func(event StreamEvent) error {
-					if event.Type == EventAnswerChunk {
-						if err := s.ClearHistory(context.Background()); err != nil {
-							return err
-						}
-						if err := s.Close(); err != nil {
-							return err
-						}
-					}
-					return nil
+					return tc.callback(s, event)
 				})
 			}()
 
@@ -584,9 +605,7 @@ func TestSessionAskStreamEmitterCanMutateSessionStateWithoutDeadlock(t *testing.
 				t.Fatal("AskStream() deadlocked while emitter mutated session state")
 			}
 
-			if _, err := s.Ask(context.Background(), "next"); !errors.Is(err, ErrSessionClosed) {
-				t.Fatalf("Ask() error after callback close = %v, want %v", err, ErrSessionClosed)
-			}
+			tc.assertAfterDone(t, s)
 		})
 	}
 }

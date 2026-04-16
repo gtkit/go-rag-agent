@@ -315,19 +315,18 @@ func (a *Agent) askLocked(ctx context.Context, s *Session, query string) (Answer
 		return Answer{}, fmt.Errorf("run answer generation: %w", err)
 	}
 
-	s.history.Append(query, answerText)
 	return Answer{
 		Text:      answerText,
 		Citations: citationsFromHits(hits),
 	}, nil
 }
 
-func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, emit func(StreamEvent) error) error {
+func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, emit func(StreamEvent) error) (string, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return "", err
 	}
 	if emit == nil {
-		return fmt.Errorf("stream emitter is required")
+		return "", fmt.Errorf("stream emitter is required")
 	}
 
 	emitEvent := func(event StreamEvent) error {
@@ -346,34 +345,34 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, e
 
 	rewrittenQuery := rag.RewriteFollowUp(query, s.history.LastUserQueries())
 	if err := emitEvent(StreamEvent{Type: EventRetrieveStart, Content: rewrittenQuery}); err != nil {
-		return err
+		return "", err
 	}
 	if err := emitEvent(StreamEvent{Type: EventToolStart, ToolName: retrieveToolName}); err != nil {
-		return err
+		return "", err
 	}
 
 	hits, evidenceText, err := a.retrieve(ctx, rewrittenQuery)
 	if err != nil {
 		if emitErr := emitEvent(StreamEvent{Type: EventRetrieveEnd, Err: err}); emitErr != nil {
-			return emitErr
+			return "", emitErr
 		}
 		if emitErr := emitEvent(StreamEvent{Type: EventToolEnd, ToolName: retrieveToolName, Err: err}); emitErr != nil {
-			return emitErr
+			return "", emitErr
 		}
-		return emitError(err)
+		return "", emitError(err)
 	}
 	if err := emitEvent(StreamEvent{Type: EventRetrieveEnd}); err != nil {
-		return err
+		return "", err
 	}
 	if err := emitEvent(StreamEvent{Type: EventToolEnd, ToolName: retrieveToolName}); err != nil {
-		return err
+		return "", err
 	}
 
 	citations := citationsFromHits(hits)
 	for i := range citations {
 		citation := citations[i]
 		if err := emitEvent(StreamEvent{Type: EventCitation, Citation: &citation}); err != nil {
-			return err
+			return "", err
 		}
 	}
 
@@ -413,13 +412,12 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, e
 	a.dispatcher.OnModelEnd(ctx, a.cfg.ChatModel, err)
 	if err != nil {
 		if emitterErr != nil && errors.Is(err, emitterErr) {
-			return err
+			return "", err
 		}
-		return emitError(err)
+		return "", emitError(err)
 	}
 
-	s.history.Append(query, answerBuilder.String())
-	return nil
+	return answerBuilder.String(), nil
 }
 
 func (a *Agent) beginOperation() error {

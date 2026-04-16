@@ -18,6 +18,9 @@ type Session struct {
 	mu      sync.Mutex
 	history *memory.History
 	closed  bool
+	executing    bool
+	pendingClear bool
+	pendingClose bool
 
 	// beforeAskLock is test-only and runs after operation admission, before execution lock.
 	beforeAskLock func()
@@ -36,10 +39,16 @@ func (s *Session) Ask(ctx context.Context, query string) (Answer, error) {
 
 	s.execMu.Lock()
 	defer s.execMu.Unlock()
-	if s.isClosed() {
-		return Answer{}, ErrSessionClosed
+	if err := s.beginExecution(); err != nil {
+		return Answer{}, err
 	}
-	return s.agent.askLocked(ctx, s, query)
+
+	answer, err := s.agent.askLocked(ctx, s, query)
+	s.endExecution(query, answer.Text, err == nil)
+	if err != nil {
+		return Answer{}, err
+	}
+	return answer, nil
 }
 
 // AskStream executes the streaming ask pipeline for this session.
@@ -55,10 +64,12 @@ func (s *Session) AskStream(ctx context.Context, query string, emit func(StreamE
 
 	s.execMu.Lock()
 	defer s.execMu.Unlock()
-	if s.isClosed() {
-		return ErrSessionClosed
+	if err := s.beginExecution(); err != nil {
+		return err
 	}
-	return s.agent.askStreamLocked(ctx, s, query, emit)
+	answerText, err := s.agent.askStreamLocked(ctx, s, query, emit)
+	s.endExecution(query, answerText, err == nil)
+	return err
 }
 
 // ClearHistory removes all stored turns for this session.
@@ -72,6 +83,10 @@ func (s *Session) ClearHistory(ctx context.Context) error {
 	if s.closed {
 		return ErrSessionClosed
 	}
+	if s.executing {
+		s.pendingClear = true
+		return nil
+	}
 	s.history.Clear()
 	return nil
 }
@@ -81,14 +96,41 @@ func (s *Session) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.executing {
+		s.pendingClose = true
+		return nil
+	}
 	s.closed = true
 	return nil
 }
 
-func (s *Session) isClosed() bool {
+func (s *Session) beginExecution() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.closed
+
+	if s.closed {
+		return ErrSessionClosed
+	}
+	s.executing = true
+	return nil
+}
+
+func (s *Session) endExecution(query string, answer string, appendHistory bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if appendHistory {
+		s.history.Append(query, answer)
+	}
+	if s.pendingClear {
+		s.history.Clear()
+		s.pendingClear = false
+	}
+	if s.pendingClose {
+		s.closed = true
+		s.pendingClose = false
+	}
+	s.executing = false
 }
 
 // AddKnowledge ingests one source by loading, chunking, embedding, and upserting records.
