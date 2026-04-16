@@ -93,6 +93,7 @@ Optional fields (defaults applied by `New` / `Validate`):
 Validation notes:
 - Empty `DataDir` keeps in-memory vector storage (no forced `"."` persistence path).
 - `SimilarityThreshold: 0` is preserved as-is (effectively disables score cutoff filtering).
+- `ChunkSize` must fit within the current assembled evidence budget (`<= 4000` runes).
 - `ChunkOverlap` must be `>=0` and `< ChunkSize`.
 - `EnableHybridSearch` and `EnableRerank` are rejected in phase 1.
 - `MaxToolCalls` exists in `Config` but is reserved in phase 1 runtime wiring.

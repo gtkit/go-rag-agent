@@ -42,6 +42,13 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: ErrInvalidConfig,
 		},
 		{
+			name: "chunk size above context budget rejected",
+			mutate: func(cfg *Config) {
+				cfg.ChunkSize = maxEvidenceChars + 1
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
 			name: "phase two flags rejected",
 			mutate: func(cfg *Config) {
 				cfg.EnableHybridSearch = true
@@ -79,6 +86,20 @@ func TestConfigValidate(t *testing.T) {
 				cfg.ChatAPIKey = "   "
 			},
 			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "zero similarity threshold is valid",
+			mutate: func(cfg *Config) {
+				cfg.SimilarityThreshold = 0
+			},
+			wantErr: nil,
+		},
+		{
+			name: "empty data dir is valid for in-memory mode",
+			mutate: func(cfg *Config) {
+				cfg.DataDir = ""
+			},
+			wantErr: nil,
 		},
 	}
 

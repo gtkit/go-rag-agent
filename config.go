@@ -93,6 +93,9 @@ func (c Config) Validate() error {
 	if c.ChunkSize <= 0 {
 		return fmt.Errorf("chunk size must be positive: %w", ErrInvalidConfig)
 	}
+	if c.ChunkSize > maxEvidenceChars {
+		return fmt.Errorf("chunk size must be <= %d: %w", maxEvidenceChars, ErrInvalidConfig)
+	}
 	if c.ChunkOverlap < 0 || c.ChunkOverlap >= c.ChunkSize {
 		return fmt.Errorf("chunk overlap must be >=0 and < chunk size: %w", ErrInvalidConfig)
 	}

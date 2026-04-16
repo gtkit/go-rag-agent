@@ -431,6 +431,22 @@ func TestAddKnowledgeIngestsAndUpsertsChunks(t *testing.T) {
 	}
 }
 
+func TestAddKnowledgeRejectsNilSource(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{
+		chunker:  mustNewChunkerForTest(t, 16, 4),
+		store:    &fakeStore{},
+		embedder: &fakeEmbedder{defaultVec: []float32{0.1, 0.2, 0.3}},
+		sessions: make(map[string]*Session),
+	}
+
+	err := a.AddKnowledge(context.Background(), nil)
+	if !errors.Is(err, ErrUnsupportedSource) {
+		t.Fatalf("AddKnowledge(nil) error = %v, want ErrUnsupportedSource", err)
+	}
+}
+
 func TestCloseWaitsInFlightAddKnowledge(t *testing.T) {
 	t.Parallel()
 
@@ -679,4 +695,14 @@ func TestCloseDoesNotForceErrSessionClosedForAdmittedAsk(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Close() did not return after Ask() drained")
 	}
+}
+
+func mustNewChunkerForTest(t *testing.T, size, overlap int) *rag.Chunker {
+	t.Helper()
+
+	chunker, err := rag.NewChunker(size, overlap)
+	if err != nil {
+		t.Fatalf("NewChunker() error = %v", err)
+	}
+	return chunker
 }
