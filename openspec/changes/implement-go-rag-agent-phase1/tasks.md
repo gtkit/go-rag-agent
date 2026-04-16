@@ -11,7 +11,7 @@
 
 ## 3. Session Memory And Execution
 
-- [ ] 3.1 Implement bounded session memory and telemetry dispatch helpers.
+- [x] 3.1 Implement bounded session memory and telemetry dispatch helpers.
 - [ ] 3.2 Implement OpenAI-compatible chat and embedding adapters using Eino-ext packages.
 - [ ] 3.3 Implement the retrieval tool and Eino ReAct runner.
 - [ ] 3.4 Implement agent construction, knowledge ingestion, synchronous session asking, and citation generation.
