@@ -114,8 +114,65 @@ func main() {
 4. 每个 chunk 通过 embedding 适配器向量化。
 5. 结果写入本地 chromem 存储。
 
+目录同步语义：
+- `DirSource(path)` 成功重导入同一路径时，会以当前目录里的受支持文件集合为准。
+- 如果某些文件上一次导入后已经从该目录删除，本次成功导入会把这些文件对应的历史索引分块一起删除。
+- 如果目录已经变空，本次成功导入会清空该目录上一次成功导入留下的历史索引。
+- 设置 `DataDir` 后，这个目录删除同步状态会跨 Agent 重启保留。
+- `FileSource(path)` 仍然只处理单文件；有道笔记桥接导入也不参与目录级删除同步。
+
 说明：
 - 扫描版 PDF / OCR 目前不在 Phase 1 范围内。
+
+## 过滤检索
+
+当知识库里有多个目录、多个来源，或者你只想让问题限定在某类文档里时，可以使用带选项的查询接口：
+
+- `AskWithOptions(ctx, query, opts)`
+- `AskStreamWithOptions(ctx, query, opts, emit)`
+
+过滤条件放在 `QueryOptions.Filter` 中，当前支持：
+- `SourcePaths`
+  说明：精确文件路径匹配
+- `SourcePrefixes`
+  说明：按来源路径前缀限制，适合限定到某个目录树
+- `Metadata`
+  说明：精确元数据匹配；多个键值会按 AND 关系同时生效
+
+示例：
+
+```go
+opts := ragagent.QueryOptions{
+	Filter: ragagent.RetrievalFilter{
+		SourcePrefixes: []string{
+			"/Users/me/knowledge/backend",
+		},
+		Metadata: map[string]string{
+			"tag": "api",
+		},
+	},
+}
+
+answer, err := agent.GetSession("me").AskWithOptions(ctx, "总结网关接口规范", opts)
+if err != nil {
+	log.Fatalf("ask with options: %v", err)
+}
+fmt.Println(answer.Text)
+```
+
+流式接口用法相同：
+
+```go
+err := agent.GetSession("me").AskStreamWithOptions(ctx, "总结网关接口规范", opts, func(event ragagent.StreamEvent) error {
+	// 处理流式事件
+	return nil
+})
+```
+
+当前限制：
+- `Metadata` 只支持精确匹配，不支持模糊匹配和范围查询。
+- `SourcePrefixes` 适合目录级限制；如果你要精确锁定单个文件，请优先用 `SourcePaths`。
+- 如果过滤后没有可用证据，接口会返回证据不足错误，不会回退到全库检索。
 
 ## 有道笔记桥接导入
 

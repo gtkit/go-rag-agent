@@ -33,6 +33,11 @@ var errSessionCallbackReentry = errors.New("ragagent: session callback reentry i
 
 // Ask 执行当前 Session 的同步问答流程。
 func (s *Session) Ask(ctx context.Context, query string) (Answer, error) {
+	return s.AskWithOptions(ctx, query, QueryOptions{})
+}
+
+// AskWithOptions 执行带查询选项的同步问答流程。
+func (s *Session) AskWithOptions(ctx context.Context, query string, opts QueryOptions) (Answer, error) {
 	if s.isEmittingCallback() {
 		return Answer{}, errSessionCallbackReentry
 	}
@@ -53,7 +58,7 @@ func (s *Session) Ask(ctx context.Context, query string) (Answer, error) {
 		return Answer{}, err
 	}
 
-	answer, err := s.agent.askLocked(ctx, s, query)
+	answer, err := s.agent.askLocked(ctx, s, query, opts)
 	s.endExecution(query, answer.Text, err == nil)
 	if err != nil {
 		return Answer{}, err
@@ -63,6 +68,11 @@ func (s *Session) Ask(ctx context.Context, query string) (Answer, error) {
 
 // AskStream 执行当前 Session 的流式问答流程。
 func (s *Session) AskStream(ctx context.Context, query string, emit func(StreamEvent) error) error {
+	return s.AskStreamWithOptions(ctx, query, QueryOptions{}, emit)
+}
+
+// AskStreamWithOptions 执行带查询选项的流式问答流程。
+func (s *Session) AskStreamWithOptions(ctx context.Context, query string, opts QueryOptions, emit func(StreamEvent) error) error {
 	if s.isEmittingCallback() {
 		return errSessionCallbackReentry
 	}
@@ -82,7 +92,7 @@ func (s *Session) AskStream(ctx context.Context, query string, emit func(StreamE
 	if err := s.beginExecution(); err != nil {
 		return err
 	}
-	answerText, err := s.agent.askStreamLocked(ctx, s, query, emit)
+	answerText, err := s.agent.askStreamLocked(ctx, s, query, opts, emit)
 	s.endExecution(query, answerText, err == nil)
 	return err
 }
@@ -200,7 +210,10 @@ func (a *Agent) AddKnowledge(ctx context.Context, src KnowledgeSource) error {
 	}
 
 	records := make([]storage.ChunkRecord, 0)
+	currentSourcePaths := make([]string, 0, len(files))
 	for _, file := range files {
+		currentSourcePaths = append(currentSourcePaths, file.Path)
+
 		doc, err := rag.LoadFile(ctx, file.Path, file.Title, file.Metadata)
 		if err != nil {
 			return fmt.Errorf("load knowledge file %q: %w", file.Path, err)
@@ -238,11 +251,45 @@ func (a *Agent) AddKnowledge(ctx context.Context, src KnowledgeSource) error {
 		}
 	}
 
-	if len(records) == 0 {
+	if root, ok := knowledgeDirectoryRoot(src); ok {
+		dirSync, err := a.ensureDirectorySync()
+		if err != nil {
+			return err
+		}
+		if err := dirSync.Sync(root, currentSourcePaths, func(stalePaths []string) error {
+			if len(records) > 0 {
+				if err := a.store.Upsert(ctx, records); err != nil {
+					return fmt.Errorf("upsert knowledge chunks: %w", err)
+				}
+			}
+			if len(stalePaths) == 0 {
+				return nil
+			}
+			if err := a.store.DeleteBySourcePaths(ctx, stalePaths); err != nil {
+				return fmt.Errorf("delete stale knowledge source paths: %w", err)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
 		return nil
 	}
-	if err := a.store.Upsert(ctx, records); err != nil {
-		return fmt.Errorf("upsert knowledge chunks: %w", err)
+
+	if len(records) > 0 {
+		if err := a.store.Upsert(ctx, records); err != nil {
+			return fmt.Errorf("upsert knowledge chunks: %w", err)
+		}
 	}
 	return nil
+}
+
+func knowledgeDirectoryRoot(src KnowledgeSource) (string, bool) {
+	switch source := src.(type) {
+	case dirSource:
+		return source.path, true
+	case *dirSource:
+		return source.path, true
+	default:
+		return "", false
+	}
 }

@@ -221,6 +221,125 @@ func TestChromemStoreSearchThresholdFiltering(t *testing.T) {
 	}
 }
 
+func TestChromemStoreSearchWithFilter(t *testing.T) {
+	t.Parallel()
+
+	chunks := []ChunkRecord{
+		{
+			ChunkID:    "alpha-api:0",
+			ParentID:   "alpha-api",
+			SourcePath: "/kb/project-a/api.md",
+			Title:      "API",
+			Text:       "alpha api",
+			StartRune:  0,
+			EndRune:    9,
+			Metadata: map[string]string{
+				"tag":  "api",
+				"team": "alpha",
+			},
+			Embedding: []float32{1, 0},
+		},
+		{
+			ChunkID:    "alpha-guide:0",
+			ParentID:   "alpha-guide",
+			SourcePath: "/kb/project-a/guide.md",
+			Title:      "Guide",
+			Text:       "alpha guide",
+			StartRune:  0,
+			EndRune:    11,
+			Metadata: map[string]string{
+				"tag":  "guide",
+				"team": "alpha",
+			},
+			Embedding: []float32{0.95, 0.05},
+		},
+		{
+			ChunkID:    "beta-api:0",
+			ParentID:   "beta-api",
+			SourcePath: "/kb/project-b/api.md",
+			Title:      "Beta API",
+			Text:       "beta api",
+			StartRune:  0,
+			EndRune:    8,
+			Metadata: map[string]string{
+				"tag":  "api",
+				"team": "beta",
+			},
+			Embedding: []float32{0.9, 0.1},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		filter  SearchFilter
+		wantIDs []string
+	}{
+		{
+			name: "filters by exact source path",
+			filter: SearchFilter{
+				SourcePaths: []string{"/kb/project-b/api.md"},
+			},
+			wantIDs: []string{"beta-api:0"},
+		},
+		{
+			name: "filters by source prefix",
+			filter: SearchFilter{
+				SourcePrefixes: []string{"/kb/project-a"},
+			},
+			wantIDs: []string{"alpha-api:0", "alpha-guide:0"},
+		},
+		{
+			name: "filters by exact metadata",
+			filter: SearchFilter{
+				Metadata: map[string]string{"team": "alpha", "tag": "guide"},
+			},
+			wantIDs: []string{"alpha-guide:0"},
+		},
+		{
+			name: "combines source prefix and metadata",
+			filter: SearchFilter{
+				SourcePrefixes: []string{"/kb/project-a"},
+				Metadata:       map[string]string{"tag": "api"},
+			},
+			wantIDs: []string{"alpha-api:0"},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store, err := NewChromemStore(Config{})
+			if err != nil {
+				t.Fatalf("NewChromemStore() error = %v", err)
+			}
+			t.Cleanup(func() {
+				if cerr := store.Close(); cerr != nil {
+					t.Fatalf("Close() error = %v", cerr)
+				}
+			})
+
+			if err := store.Upsert(context.Background(), chunks); err != nil {
+				t.Fatalf("Upsert() error = %v", err)
+			}
+
+			got, err := store.SearchWithFilter(context.Background(), []float32{1, 0}, 5, -1, tc.filter)
+			if err != nil {
+				t.Fatalf("SearchWithFilter() error = %v", err)
+			}
+
+			gotIDs := make([]string, 0, len(got))
+			for _, hit := range got {
+				gotIDs = append(gotIDs, hit.Chunk.ChunkID)
+			}
+			if !slices.Equal(gotIDs, tc.wantIDs) {
+				t.Fatalf("SearchWithFilter() ids = %v, want %v", gotIDs, tc.wantIDs)
+			}
+		})
+	}
+}
+
 func TestChromemStoreUpsertRejectsDuplicateChunkIDInBatch(t *testing.T) {
 	t.Parallel()
 

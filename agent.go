@@ -26,12 +26,15 @@ const (
 
 // Agent 是根运行时对象，负责知识导入、检索、会话与执行编排。
 type Agent struct {
-	cfg        Config
-	store      storage.VectorStore
-	embedder   llm.Embedder
-	runner     graph.Runner
-	chunker    *rag.Chunker
-	dispatcher telemetry.Dispatcher
+	cfg         Config
+	store       storage.VectorStore
+	embedder    llm.Embedder
+	runner      graph.Runner
+	chunker     *rag.Chunker
+	dispatcher  telemetry.Dispatcher
+	dirSync     *directorySyncState
+	dirSyncErr  error
+	dirSyncOnce sync.Once
 
 	sessionsMu sync.RWMutex
 	sessions   map[string]*Session
@@ -48,14 +51,16 @@ type rootRetriever struct {
 	embedder  llm.Embedder
 	topK      int
 	threshold float32
+	filter    storage.SearchFilter
 }
 
-func newRootRetriever(store storage.VectorStore, embedder llm.Embedder, topK int, threshold float32) *rootRetriever {
+func newRootRetriever(store storage.VectorStore, embedder llm.Embedder, topK int, threshold float32, filter storage.SearchFilter) *rootRetriever {
 	return &rootRetriever{
 		store:     store,
 		embedder:  embedder,
 		topK:      topK,
 		threshold: threshold,
+		filter:    filter,
 	}
 }
 
@@ -70,7 +75,7 @@ func (r *rootRetriever) Search(ctx context.Context, query string) ([]storage.Sea
 	if len(rows) != 1 || len(rows[0]) == 0 {
 		return nil, fmt.Errorf("query embedding is empty")
 	}
-	hits, err := r.store.Search(ctx, rows[0], r.topK, r.threshold)
+	hits, err := r.store.SearchWithFilter(ctx, rows[0], r.topK, r.threshold, r.filter)
 	if err != nil {
 		return nil, fmt.Errorf("search vector store: %w", err)
 	}
@@ -130,12 +135,18 @@ func New(cfg Config) (*Agent, error) {
 	}
 	dispatcher := telemetry.NewDispatcher(callbacks)
 	retrievalTool := tools.NewRetrievalTool(
-		newRootRetriever(store, embedder, cfg.TopK, float32(cfg.SimilarityThreshold)),
+		newRootRetriever(store, embedder, cfg.TopK, float32(cfg.SimilarityThreshold), storage.SearchFilter{}),
 	)
 	runner, err := graph.NewReactRunner(ctx, chatModel, retrievalTool, cfg.MaxIterations)
 	if err != nil {
 		_ = store.Close()
 		return nil, fmt.Errorf("create react runner: %w", err)
+	}
+
+	dirSync, err := newDirectorySyncState(cfg.DataDir)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("create directory sync state: %w", err)
 	}
 
 	return &Agent{
@@ -145,6 +156,7 @@ func New(cfg Config) (*Agent, error) {
 		runner:     runner,
 		chunker:    chunker,
 		dispatcher: dispatcher,
+		dirSync:    dirSync,
 		sessions:   make(map[string]*Session),
 	}, nil
 }
@@ -222,6 +234,22 @@ func callbackPanicError(v any) error {
 	return fmt.Errorf("ragagent: callback panic: %v", v)
 }
 
+func (a *Agent) ensureDirectorySync() (*directorySyncState, error) {
+	a.dirSyncOnce.Do(func() {
+		if a.dirSync != nil || a.dirSyncErr != nil {
+			return
+		}
+		a.dirSync, a.dirSyncErr = newDirectorySyncState(a.cfg.DataDir)
+	})
+	if a.dirSyncErr != nil {
+		return nil, fmt.Errorf("ensure directory sync state: %w", a.dirSyncErr)
+	}
+	if a.dirSync == nil {
+		return nil, fmt.Errorf("directory sync state is nil")
+	}
+	return a.dirSync, nil
+}
+
 func (a *Agent) runTelemetryCallback(s *Session, fn func()) (err error) {
 	a.callbackDepth.Add(1)
 	defer a.callbackDepth.Add(-1)
@@ -244,7 +272,7 @@ func (a *Agent) runTelemetryCallback(s *Session, fn func()) (err error) {
 	return nil
 }
 
-func (a *Agent) retrieve(ctx context.Context, s *Session, query string) ([]storage.SearchHit, string, error) {
+func (a *Agent) retrieve(ctx context.Context, s *Session, query string, filter storage.SearchFilter) ([]storage.SearchHit, string, error) {
 	if err := a.runTelemetryCallback(s, func() { a.dispatcher.OnRetrieveStart(ctx, query) }); err != nil {
 		return nil, "", err
 	}
@@ -257,7 +285,7 @@ func (a *Agent) retrieve(ctx context.Context, s *Session, query string) ([]stora
 		keptHits  []storage.SearchHit
 		runErr    error
 		evidence  string
-		retriever = newRootRetriever(a.store, a.embedder, a.cfg.TopK, float32(a.cfg.SimilarityThreshold))
+		retriever = newRootRetriever(a.store, a.embedder, a.cfg.TopK, float32(a.cfg.SimilarityThreshold), filter)
 	)
 	defer func() {
 		if endErr := a.runTelemetryCallback(s, func() { a.dispatcher.OnRetrieveEnd(ctx, len(keptHits), runErr) }); endErr != nil && runErr == nil {
@@ -331,13 +359,13 @@ func citationsFromHits(hits []storage.SearchHit) []Citation {
 	return citations
 }
 
-func (a *Agent) askLocked(ctx context.Context, s *Session, query string) (Answer, error) {
+func (a *Agent) askLocked(ctx context.Context, s *Session, query string, opts QueryOptions) (Answer, error) {
 	if err := ctx.Err(); err != nil {
 		return Answer{}, err
 	}
 
 	rewrittenQuery := rag.RewriteFollowUp(query, s.history.LastUserQueries())
-	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery)
+	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery, opts.storageFilter())
 	if err != nil {
 		return Answer{}, err
 	}
@@ -363,7 +391,7 @@ func (a *Agent) askLocked(ctx context.Context, s *Session, query string) (Answer
 	}, nil
 }
 
-func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, emit func(StreamEvent) error) (string, error) {
+func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, opts QueryOptions, emit func(StreamEvent) error) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -392,6 +420,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, e
 	}
 
 	rewrittenQuery := rag.RewriteFollowUp(query, s.history.LastUserQueries())
+	filter := opts.storageFilter()
 	if err := emitEvent(StreamEvent{Type: EventRetrieveStart, Content: rewrittenQuery}); err != nil {
 		return "", err
 	}
@@ -399,7 +428,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, e
 		return "", err
 	}
 
-	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery)
+	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery, filter)
 	if err != nil {
 		if emitErr := emitEvent(StreamEvent{Type: EventRetrieveEnd, Err: err}); emitErr != nil {
 			return "", emitErr

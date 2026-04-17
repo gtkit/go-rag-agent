@@ -60,6 +60,18 @@ type Answer struct {
 	Citations []Citation
 }
 
+// RetrievalFilter 定义单次问答检索阶段的过滤条件。
+type RetrievalFilter struct {
+	SourcePaths    []string
+	SourcePrefixes []string
+	Metadata       map[string]string
+}
+
+// QueryOptions 定义单次问答的可选执行参数。
+type QueryOptions struct {
+	Filter RetrievalFilter
+}
+
 // StreamEvent 是流式执行回调的事件载荷。
 type StreamEvent struct {
 	Type      EventType

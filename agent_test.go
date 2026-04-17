@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -23,7 +24,9 @@ type fakeStore struct {
 	searchHits    []storage.SearchHit
 	searchErr     error
 	searchCalls   int
+	lastFilter    storage.SearchFilter
 	upsertBatches [][]storage.ChunkRecord
+	deleteCalls   [][]string
 }
 
 func (f *fakeStore) Upsert(_ context.Context, chunks []storage.ChunkRecord) error {
@@ -34,13 +37,85 @@ func (f *fakeStore) Upsert(_ context.Context, chunks []storage.ChunkRecord) erro
 }
 
 func (f *fakeStore) Search(_ context.Context, _ []float32, _ int, _ float32) ([]storage.SearchHit, error) {
+	return f.SearchWithFilter(context.Background(), nil, 0, 0, storage.SearchFilter{})
+}
+
+func (f *fakeStore) SearchWithFilter(_ context.Context, _ []float32, _ int, _ float32, filter storage.SearchFilter) ([]storage.SearchHit, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	f.searchCalls++
-	return slices.Clone(f.searchHits), f.searchErr
+	f.lastFilter = filter
+	if f.searchErr != nil {
+		return nil, f.searchErr
+	}
+	return filterHitsForTest(f.searchHits, filter), nil
+}
+
+func (f *fakeStore) DeleteBySourcePaths(_ context.Context, sourcePaths []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.deleteCalls = append(f.deleteCalls, slices.Clone(sourcePaths))
+	if len(sourcePaths) == 0 {
+		return nil
+	}
+	sourceSet := make(map[string]struct{}, len(sourcePaths))
+	for _, sourcePath := range sourcePaths {
+		sourceSet[sourcePath] = struct{}{}
+	}
+
+	filteredHits := make([]storage.SearchHit, 0, len(f.searchHits))
+	for _, hit := range f.searchHits {
+		if _, ok := sourceSet[hit.Chunk.SourcePath]; ok {
+			continue
+		}
+		filteredHits = append(filteredHits, hit)
+	}
+	f.searchHits = filteredHits
+	return nil
 }
 
 func (f *fakeStore) Close() error { return nil }
+
+func filterHitsForTest(hits []storage.SearchHit, filter storage.SearchFilter) []storage.SearchHit {
+	if len(hits) == 0 {
+		return nil
+	}
+
+	filtered := make([]storage.SearchHit, 0, len(hits))
+	for _, hit := range hits {
+		if !matchesSearchFilterForTest(hit.Chunk, filter) {
+			continue
+		}
+		filtered = append(filtered, hit)
+	}
+	return filtered
+}
+
+func matchesSearchFilterForTest(chunk storage.ChunkRecord, filter storage.SearchFilter) bool {
+	if len(filter.SourcePaths) > 0 && !slices.Contains(filter.SourcePaths, chunk.SourcePath) {
+		return false
+	}
+	if len(filter.SourcePrefixes) > 0 {
+		matchedPrefix := false
+		for _, prefix := range filter.SourcePrefixes {
+			if strings.HasPrefix(chunk.SourcePath, prefix) {
+				matchedPrefix = true
+				break
+			}
+		}
+		if !matchedPrefix {
+			return false
+		}
+	}
+	for key, value := range filter.Metadata {
+		if chunk.Metadata[key] != value {
+			return false
+		}
+	}
+	return true
+}
 
 type fakeEmbedder struct {
 	mu         sync.Mutex
@@ -408,6 +483,134 @@ func TestSessionAskReturnsAnswerAndCitations(t *testing.T) {
 			lastTurn := turns[len(turns)-1]
 			if lastTurn.User != tc.query || lastTurn.Assistant != tc.wantAnswer {
 				t.Fatalf("last turn = %#v, want user=%q assistant=%q", lastTurn, tc.query, tc.wantAnswer)
+			}
+		})
+	}
+}
+
+func TestSessionAskWithOptionsFiltersRetrieval(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		options             QueryOptions
+		wantCitations       []Citation
+		wantFilter          storage.SearchFilter
+		wantErr             error
+		wantSearchCallCount int
+	}{
+		{
+			name: "source prefix filter keeps only matching citations",
+			options: QueryOptions{
+				Filter: RetrievalFilter{
+					SourcePrefixes: []string{"/kb/project-a"},
+				},
+			},
+			wantCitations: []Citation{
+				{
+					SourcePath: "/kb/project-a/api.md",
+					Title:      "API",
+					ChunkID:    "alpha:0",
+					StartRune:  0,
+					EndRune:    9,
+				},
+			},
+			wantFilter: storage.SearchFilter{
+				SourcePrefixes: []string{"/kb/project-a"},
+			},
+			wantSearchCallCount: 1,
+		},
+		{
+			name: "metadata filter can make evidence insufficient",
+			options: QueryOptions{
+				Filter: RetrievalFilter{
+					Metadata: map[string]string{"team": "missing"},
+				},
+			},
+			wantErr: ErrEvidenceInsufficient,
+			wantFilter: storage.SearchFilter{
+				Metadata: map[string]string{"team": "missing"},
+			},
+			wantSearchCallCount: 1,
+		},
+	}
+
+	baseHits := []storage.SearchHit{
+		{
+			Chunk: storage.ChunkRecord{
+				ChunkID:    "alpha:0",
+				SourcePath: "/kb/project-a/api.md",
+				Title:      "API",
+				Text:       "alpha api",
+				StartRune:  0,
+				EndRune:    9,
+				Metadata:   map[string]string{"team": "alpha"},
+			},
+			Score: 0.95,
+		},
+		{
+			Chunk: storage.ChunkRecord{
+				ChunkID:    "beta:0",
+				SourcePath: "/kb/project-b/api.md",
+				Title:      "Beta API",
+				Text:       "beta api",
+				StartRune:  0,
+				EndRune:    8,
+				Metadata:   map[string]string{"team": "beta"},
+			},
+			Score: 0.94,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := &fakeStore{searchHits: baseHits}
+			embedder := &fakeEmbedder{defaultVec: []float32{1, 0}}
+			runner := &fakeRunner{answer: "filtered answer"}
+			a := &Agent{
+				cfg: Config{
+					TopK:                5,
+					SimilarityThreshold: 0.5,
+					ChatModel:           "chat-test",
+					MaxHistoryRounds:    8,
+				},
+				store:    store,
+				embedder: embedder,
+				runner:   runner,
+				sessions: make(map[string]*Session),
+			}
+
+			answer, err := a.GetSession("ask-with-options").AskWithOptions(context.Background(), "show docs", tc.options)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("AskWithOptions() error = %v, want errors.Is(..., %v)", err, tc.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("AskWithOptions() error = %v", err)
+			}
+
+			store.mu.Lock()
+			gotFilter := store.lastFilter
+			gotSearchCalls := store.searchCalls
+			store.mu.Unlock()
+			if gotSearchCalls != tc.wantSearchCallCount {
+				t.Fatalf("search call count = %d, want %d", gotSearchCalls, tc.wantSearchCallCount)
+			}
+			if !slices.Equal(gotFilter.SourcePaths, tc.wantFilter.SourcePaths) {
+				t.Fatalf("search filter source paths = %v, want %v", gotFilter.SourcePaths, tc.wantFilter.SourcePaths)
+			}
+			if !slices.Equal(gotFilter.SourcePrefixes, tc.wantFilter.SourcePrefixes) {
+				t.Fatalf("search filter source prefixes = %v, want %v", gotFilter.SourcePrefixes, tc.wantFilter.SourcePrefixes)
+			}
+			if !maps.Equal(gotFilter.Metadata, tc.wantFilter.Metadata) {
+				t.Fatalf("search filter metadata = %v, want %v", gotFilter.Metadata, tc.wantFilter.Metadata)
+			}
+
+			if tc.wantErr == nil && !slices.Equal(answer.Citations, tc.wantCitations) {
+				t.Fatalf("AskWithOptions() citations = %#v, want %#v", answer.Citations, tc.wantCitations)
 			}
 		})
 	}

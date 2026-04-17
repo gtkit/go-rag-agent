@@ -3,6 +3,7 @@ package ragagent
 import (
 	"context"
 	"errors"
+	"maps"
 	"runtime"
 	"slices"
 	"strings"
@@ -291,6 +292,138 @@ func TestSessionAskStreamRunnerFailureEmitsErrorAndModelTelemetry(t *testing.T) 
 			}
 			if !(pos["model_start"] < pos["model_end"]) {
 				t.Fatalf("model telemetry order invalid: %v", telemetryEvents)
+			}
+		})
+	}
+}
+
+func TestSessionAskStreamWithOptionsFiltersRetrieval(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		options       QueryOptions
+		wantCitations []Citation
+		wantFilter    storage.SearchFilter
+		wantErr       error
+	}{
+		{
+			name: "metadata filter keeps only matching streaming citations",
+			options: QueryOptions{
+				Filter: RetrievalFilter{
+					Metadata: map[string]string{"team": "alpha"},
+				},
+			},
+			wantCitations: []Citation{
+				{
+					SourcePath: "/kb/project-a/api.md",
+					Title:      "API",
+					ChunkID:    "alpha:0",
+					StartRune:  0,
+					EndRune:    9,
+				},
+			},
+			wantFilter: storage.SearchFilter{
+				Metadata: map[string]string{"team": "alpha"},
+			},
+		},
+		{
+			name: "filter excluding all evidence returns insufficient evidence",
+			options: QueryOptions{
+				Filter: RetrievalFilter{
+					SourcePaths: []string{"/kb/none.md"},
+				},
+			},
+			wantErr: ErrEvidenceInsufficient,
+			wantFilter: storage.SearchFilter{
+				SourcePaths: []string{"/kb/none.md"},
+			},
+		},
+	}
+
+	baseHits := []storage.SearchHit{
+		{
+			Chunk: storage.ChunkRecord{
+				ChunkID:    "alpha:0",
+				SourcePath: "/kb/project-a/api.md",
+				Title:      "API",
+				Text:       "alpha api",
+				StartRune:  0,
+				EndRune:    9,
+				Metadata:   map[string]string{"team": "alpha"},
+			},
+			Score: 0.97,
+		},
+		{
+			Chunk: storage.ChunkRecord{
+				ChunkID:    "beta:0",
+				SourcePath: "/kb/project-b/api.md",
+				Title:      "Beta API",
+				Text:       "beta api",
+				StartRune:  0,
+				EndRune:    8,
+				Metadata:   map[string]string{"team": "beta"},
+			},
+			Score: 0.96,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := &fakeStore{searchHits: baseHits}
+			runner := &fakeStreamingRunner{
+				askStreamFn: func(_ context.Context, _ graph.Request, emit graph.StreamEmitter) error {
+					if err := emit(graph.Event{Type: graph.EventAnswerChunk, Content: "stream"}); err != nil {
+						return err
+					}
+					return emit(graph.Event{Type: graph.EventDone})
+				},
+			}
+			a := &Agent{
+				cfg: Config{
+					TopK:                5,
+					SimilarityThreshold: 0.5,
+					MaxHistoryRounds:    8,
+				},
+				store:    store,
+				embedder: &fakeEmbedder{defaultVec: []float32{1, 0}},
+				runner:   runner,
+				sessions: make(map[string]*Session),
+			}
+
+			var gotCitations []Citation
+			err := a.GetSession("stream-with-options").AskStreamWithOptions(context.Background(), "show docs", tc.options, func(event StreamEvent) error {
+				if event.Type == EventCitation && event.Citation != nil {
+					gotCitations = append(gotCitations, *event.Citation)
+				}
+				return nil
+			})
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("AskStreamWithOptions() error = %v, want errors.Is(..., %v)", err, tc.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("AskStreamWithOptions() error = %v", err)
+			}
+
+			store.mu.Lock()
+			gotFilter := store.lastFilter
+			store.mu.Unlock()
+			if !slices.Equal(gotFilter.SourcePaths, tc.wantFilter.SourcePaths) {
+				t.Fatalf("search filter source paths = %v, want %v", gotFilter.SourcePaths, tc.wantFilter.SourcePaths)
+			}
+			if !slices.Equal(gotFilter.SourcePrefixes, tc.wantFilter.SourcePrefixes) {
+				t.Fatalf("search filter source prefixes = %v, want %v", gotFilter.SourcePrefixes, tc.wantFilter.SourcePrefixes)
+			}
+			if !maps.Equal(gotFilter.Metadata, tc.wantFilter.Metadata) {
+				t.Fatalf("search filter metadata = %v, want %v", gotFilter.Metadata, tc.wantFilter.Metadata)
+			}
+
+			if tc.wantErr == nil && !slices.Equal(gotCitations, tc.wantCitations) {
+				t.Fatalf("AskStreamWithOptions() citations = %#v, want %#v", gotCitations, tc.wantCitations)
 			}
 		})
 	}

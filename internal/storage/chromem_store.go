@@ -29,7 +29,7 @@ type ChromemStore struct {
 	db         *chromem.DB
 	collection *chromem.Collection
 	upsertMu   sync.Mutex
-	// afterAddHook is test-only and runs after add/overwrite, before stale cleanup.
+	// afterAddHook 仅用于测试，会在 add/overwrite 完成后、stale cleanup 之前执行。
 	afterAddHook func()
 }
 
@@ -157,6 +157,10 @@ func (s *ChromemStore) Upsert(ctx context.Context, chunks []ChunkRecord) error {
 }
 
 func (s *ChromemStore) Search(ctx context.Context, queryEmbedding []float32, topK int, threshold float32) ([]SearchHit, error) {
+	return s.SearchWithFilter(ctx, queryEmbedding, topK, threshold, SearchFilter{})
+}
+
+func (s *ChromemStore) SearchWithFilter(ctx context.Context, queryEmbedding []float32, topK int, threshold float32, filter SearchFilter) ([]SearchHit, error) {
 	if len(queryEmbedding) == 0 {
 		return nil, fmt.Errorf("query embedding is empty")
 	}
@@ -171,8 +175,14 @@ func (s *ChromemStore) Search(ctx context.Context, queryEmbedding []float32, top
 	if topK > count {
 		topK = count
 	}
+	filter = filter.normalized()
 
-	results, err := s.collection.QueryEmbedding(ctx, queryEmbedding, topK, nil, nil)
+	queryCount := topK
+	if !filter.isZero() {
+		queryCount = count
+	}
+
+	results, err := s.collection.QueryEmbedding(ctx, queryEmbedding, queryCount, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("query embedding: %w", err)
 	}
@@ -182,13 +192,44 @@ func (s *ChromemStore) Search(ctx context.Context, queryEmbedding []float32, top
 		if result.Similarity < threshold {
 			continue
 		}
+		chunk := resultToChunk(result)
+		if !filter.isZero() && !filter.matchesChunk(chunk) {
+			continue
+		}
 		hits = append(hits, SearchHit{
-			Chunk: resultToChunk(result),
+			Chunk: chunk,
 			Score: result.Similarity,
 		})
+		if len(hits) == topK {
+			break
+		}
 	}
 
 	return hits, nil
+}
+
+func (s *ChromemStore) DeleteBySourcePaths(ctx context.Context, sourcePaths []string) error {
+	s.upsertMu.Lock()
+	defer s.upsertMu.Unlock()
+
+	if len(sourcePaths) == 0 {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("delete source paths: %w", err)
+	}
+	internalCtx := context.WithoutCancel(ctx)
+
+	paths := slices.Compact(slices.Sorted(slices.Values(sourcePaths)))
+	for _, sourcePath := range paths {
+		if err := s.collection.Delete(internalCtx, map[string]string{metadataKeySourcePath: sourcePath}, nil); err != nil {
+			return fmt.Errorf("delete source path %q: %w", sourcePath, err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("delete source paths: %w", err)
+	}
+	return nil
 }
 
 func (s *ChromemStore) Close() error {
