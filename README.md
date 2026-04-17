@@ -93,13 +93,21 @@ func main() {
 - `MaxHistoryRounds`（默认 `8`）
 - `MaxIterations`（默认 `3`）
 - `RequestTimeout`（默认 `30s`）
+- `EnableHybridSearch`（默认 `false`）
+- `EnableRerank`（默认 `false`）
+- `HybridCandidateMultiplier`（默认 `4`）
+- `HybridRRFK`（默认 `60`）
+- `RerankShortlistMultiplier`（默认 `2`）
 
 校验说明：
 - 空 `DataDir` 表示使用内存模式，不会强制写入当前目录。
 - `SimilarityThreshold: 0` 会保留非负相似度结果；如果你希望连负相似度结果也保留，需要传负值。
 - `ChunkSize` 必须不超过当前证据拼装预算（`<= 4000` rune）。
 - `ChunkOverlap` 必须满足 `>= 0` 且 `< ChunkSize`。
-- `EnableHybridSearch` 和 `EnableRerank` 在 Phase 1 会被拒绝。
+- `EnableRerank` 只能在 `EnableHybridSearch=true` 时启用。
+- `HybridCandidateMultiplier` 必须是正数。
+- `HybridRRFK` 必须是正数。
+- `RerankShortlistMultiplier` 必须是正数。
 - `MaxToolCalls` 目前在 Phase 1 里保留字段，但还没有真正接入运行时控制。
 - `PDFOCRBridge` 只有在你要导入扫描版 PDF 时才需要配置；如果配置了，`Args` 必须同时包含 `{input}` 和 `{output}` 占位符。
 
@@ -218,6 +226,137 @@ err := agent.GetSession("me").AskStreamWithOptions(ctx, "总结网关接口规�
 - `Metadata` 只支持精确匹配，不支持模糊匹配和范围查询。
 - `SourcePrefixes` 适合目录级限制；如果你要精确锁定单个文件，请优先用 `SourcePaths`。
 - 如果过滤后没有可用证据，接口会返回证据不足错误，不会回退到全库检索。
+
+## Hybrid Retrieval 与 Rerank
+
+当前库支持两级检索增强：
+
+- `EnableHybridSearch`
+  说明：把纯向量召回升级为“向量召回 + lexical recall”融合。
+- `EnableRerank`
+  说明：在 hybrid shortlist 上执行可选重排。
+- `HybridCandidateMultiplier`
+  说明：控制 hybrid 路径保留多少倍 `TopK` 的候选参与融合。默认 `4`。
+- `HybridRRFK`
+  说明：控制 RRF 融合时排名衰减强度。默认 `60`。
+- `RerankShortlistMultiplier`
+  说明：控制 rerank 作用的 shortlist 大小。默认 `2`，即约 `TopK * 2`。
+
+示例：
+
+```go
+cfg := ragagent.Config{
+	ChatModel:         "gpt-4o-mini",
+	ChatBaseURL:       "https://api.openai.example/v1",
+	ChatAPIKey:        "replace-with-your-chat-key",
+	EmbeddingModel:    "text-embedding-3-small",
+	EmbeddingAPIKey:   "replace-with-your-embedding-key",
+	EnableHybridSearch: true,
+	EnableRerank:       true,
+	HybridCandidateMultiplier: 4,
+	HybridRRFK:                60,
+	RerankShortlistMultiplier: 2,
+}
+```
+
+行为说明：
+- hybrid retrieval 会把精确词项命中和语义相关性一起纳入排序。
+- rerank 首版只在 shortlist 上工作，不会对全量候选做重排。
+- 同步问答、流式问答和内部 retrieval tool 路径会统一使用同一套检索策略。
+
+适用场景：
+- 接口名、表名、缩写、文件名这类 lexical 信号很强的查询
+- 纯向量召回容易把“语义相关但词项不精确”的内容排在前面时
+
+当前限制：
+- lexical recall 首版采用本地简单 tokenizer 和候选扫描策略，不是完整全文检索引擎。
+- rerank 首版是本地规则实现，没有接入额外模型服务。
+
+推荐上线默认值：
+- 大多数知识库先用：
+  - `EnableHybridSearch=true`
+  - `EnableRerank=true`
+  - `HybridCandidateMultiplier=4`
+  - `HybridRRFK=60`
+  - `RerankShortlistMultiplier=2`
+- 如果延迟压力更大：
+  - 先把 `RerankShortlistMultiplier` 从 `2` 降到 `1`
+  - 再视情况把 `HybridCandidateMultiplier` 从 `4` 降到 `2`
+- 如果精确词项召回仍不够：
+  - 先保持 `HybridRRFK=60`
+  - 优先提高 `HybridCandidateMultiplier`
+
+Benchmark 运行方式：
+
+```bash
+go test -bench=. -run '^$' ./internal/retrieval ./internal/storage
+```
+
+建议至少比较三组：
+- vector-only
+- hybrid
+- hybrid + rerank
+
+## 可观测性与降级
+
+当前库除了基础 `Callback` 生命周期回调外，还支持三类可选回调接口：
+
+- `RetrievalMetricsCallback`
+  说明：接收一次检索完成后的聚合指标
+- `ModelMetricsCallback`
+  说明：接收一次模型调用完成后的聚合指标
+- `FallbackCallback`
+  说明：接收 hybrid / rerank 降级事件
+
+检索指标当前包含：
+- `Duration`
+- `HybridEnabled`
+- `RerankEnabled`
+- `VectorCandidateCount`
+- `LexicalCandidateCount`
+- `FusedCandidateCount`
+- `RerankShortlistCount`
+- `FinalHitCount`
+
+模型指标当前包含：
+- `Model`
+- `Duration`
+- `Stream`
+- `OutputChars`
+
+降级语义：
+- hybrid 内部阶段失败时，会退回 `vector_only`
+- rerank 阶段失败时，会退回未 rerank 的 `hybrid`
+- 基础向量检索本身失败时，不做假降级，直接返回错误
+
+示例：
+
+```go
+type metricsObserver struct{}
+
+func (metricsObserver) OnRetrieveStart(context.Context, string)          {}
+func (metricsObserver) OnRetrieveEnd(context.Context, int, error)        {}
+func (metricsObserver) OnToolStart(context.Context, string)              {}
+func (metricsObserver) OnToolEnd(context.Context, string, error)         {}
+func (metricsObserver) OnModelStart(context.Context, string)             {}
+func (metricsObserver) OnModelEnd(context.Context, string, error)        {}
+func (metricsObserver) OnRetrieveMetrics(_ context.Context, m ragagent.RetrievalMetrics) {
+	log.Printf("retrieve duration=%s final_hits=%d hybrid=%v rerank=%v",
+		m.Duration, m.FinalHitCount, m.HybridEnabled, m.RerankEnabled)
+}
+func (metricsObserver) OnModelMetrics(_ context.Context, m ragagent.ModelMetrics) {
+	log.Printf("model=%s duration=%s stream=%v output_chars=%d",
+		m.Model, m.Duration, m.Stream, m.OutputChars)
+}
+func (metricsObserver) OnFallback(_ context.Context, e ragagent.FallbackEvent) {
+	log.Printf("fallback stage=%s to=%s err=%v", e.Stage, e.FallbackTo, e.Err)
+}
+```
+
+企业级线上建议：
+- 先把 `OnRetrieveMetrics`、`OnModelMetrics` 接到你的 metrics / tracing 适配层。
+- 对 `OnFallback` 建告警阈值；少量 fallback 可接受，持续升高通常说明参数或数据质量有问题。
+- 不要只看总耗时，至少分开看检索耗时和模型耗时。
 
 ## 内置元数据提取
 

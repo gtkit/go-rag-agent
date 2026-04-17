@@ -429,6 +429,140 @@ func TestSessionAskStreamWithOptionsFiltersRetrieval(t *testing.T) {
 	}
 }
 
+func TestSessionAskStreamWithHybridRetrievalPromotesLexicalHit(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeStore{
+		searchHits: []storage.SearchHit{
+			{
+				Chunk: storage.ChunkRecord{
+					ChunkID:    "semantic:0",
+					SourcePath: "/kb/overview.md",
+					Title:      "Overview",
+					Text:       "semantic overview without exact tokens",
+					StartRune:  0,
+					EndRune:    36,
+				},
+				Score: 0.99,
+			},
+			{
+				Chunk: storage.ChunkRecord{
+					ChunkID:    "gateway:0",
+					SourcePath: "/kb/gateway.md",
+					Title:      "Gateway API",
+					Text:       "gateway api exact match terms appear here",
+					StartRune:  0,
+					EndRune:    40,
+				},
+				Score: 0.80,
+			},
+		},
+	}
+	runner := &fakeStreamingRunner{
+		askStreamFn: func(_ context.Context, _ graph.Request, emit graph.StreamEmitter) error {
+			if err := emit(graph.Event{Type: graph.EventAnswerChunk, Content: "chunk"}); err != nil {
+				return err
+			}
+			return emit(graph.Event{Type: graph.EventDone})
+		},
+	}
+	a := &Agent{
+		cfg: Config{
+			TopK:                1,
+			SimilarityThreshold: 0.5,
+			MaxHistoryRounds:    8,
+			EnableHybridSearch:  true,
+		},
+		store:    store,
+		embedder: &fakeEmbedder{defaultVec: []float32{1, 0}},
+		runner:   runner,
+		sessions: make(map[string]*Session),
+	}
+
+	var gotCitations []Citation
+	err := a.GetSession("stream-hybrid").AskStream(context.Background(), "gateway api", func(event StreamEvent) error {
+		if event.Type == EventCitation && event.Citation != nil {
+			gotCitations = append(gotCitations, *event.Citation)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("AskStream() error = %v", err)
+	}
+	if len(gotCitations) != 1 {
+		t.Fatalf("AskStream() citations len = %d, want 1", len(gotCitations))
+	}
+	if gotCitations[0].ChunkID != "gateway:0" {
+		t.Fatalf("AskStream() citation chunk = %q, want %q", gotCitations[0].ChunkID, "gateway:0")
+	}
+}
+
+func TestAskStreamEmitsDetailedModelMetrics(t *testing.T) {
+	t.Parallel()
+
+	recorder := &detailedCallbackRecorder{}
+	a := &Agent{
+		cfg: Config{
+			TopK:                1,
+			SimilarityThreshold: 0.5,
+			MaxHistoryRounds:    8,
+			EnableHybridSearch:  true,
+		},
+		store: &fakeStore{
+			searchHits: []storage.SearchHit{
+				{
+					Chunk: storage.ChunkRecord{
+						ChunkID:    "gateway:0",
+						SourcePath: "/kb/gateway.md",
+						Title:      "Gateway API",
+						Text:       "gateway api exact match terms appear here",
+						StartRune:  0,
+						EndRune:    40,
+					},
+					Score: 0.80,
+				},
+			},
+		},
+		embedder: &fakeEmbedder{defaultVec: []float32{1, 0}},
+		runner: &fakeStreamingRunner{
+			askStreamFn: func(_ context.Context, _ graph.Request, emit graph.StreamEmitter) error {
+				if err := emit(graph.Event{Type: graph.EventAnswerChunk, Content: "hello "}); err != nil {
+					return err
+				}
+				if err := emit(graph.Event{Type: graph.EventAnswerChunk, Content: "world"}); err != nil {
+					return err
+				}
+				return emit(graph.Event{Type: graph.EventDone})
+			},
+		},
+		dispatcher: telemetry.NewDispatcher([]telemetry.Callback{recorder}),
+		callbacks:  []Callback{recorder},
+		sessions:   make(map[string]*Session),
+	}
+
+	err := a.GetSession("stream-metrics").AskStream(context.Background(), "gateway api", func(StreamEvent) error { return nil })
+	if err != nil {
+		t.Fatalf("AskStream() error = %v", err)
+	}
+
+	_, modelMetrics, fallbacks := recorder.snapshotMetrics()
+	if len(modelMetrics) != 1 {
+		t.Fatalf("model metrics len = %d, want 1", len(modelMetrics))
+	}
+	if !modelMetrics[0].Stream {
+		t.Fatal("model Stream = false, want true")
+	}
+	if modelMetrics[0].OutputChars != len("hello world") {
+		t.Fatalf("model OutputChars = %d, want %d", modelMetrics[0].OutputChars, len("hello world"))
+	}
+	if modelMetrics[0].Duration <= 0 {
+		t.Fatalf("model Duration = %v, want positive", modelMetrics[0].Duration)
+	}
+	if len(fallbacks) != 0 {
+		t.Fatalf("fallbacks = %v, want none", fallbacks)
+	}
+}
+
 func TestSessionAskStreamEmitterPanicReturnsError(t *testing.T) {
 	t.Parallel()
 

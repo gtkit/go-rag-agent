@@ -17,20 +17,23 @@ type Config struct {
 	EmbeddingBaseURL string
 	EmbeddingAPIKey  string
 
-	DataDir             string
-	TopK                int
-	SimilarityThreshold float64
-	ChunkSize           int
-	ChunkOverlap        int
-	MaxHistoryRounds    int
-	MaxToolCalls        int
-	MaxIterations       int
-	RequestTimeout      time.Duration
-	EnableHybridSearch  bool
-	EnableRerank        bool
-	PDFOCRBridge        PDFOCRBridgeConfig
-	Logger              Logger
-	Callbacks           []Callback
+	DataDir                   string
+	TopK                      int
+	SimilarityThreshold       float64
+	ChunkSize                 int
+	ChunkOverlap              int
+	MaxHistoryRounds          int
+	MaxToolCalls              int
+	MaxIterations             int
+	RequestTimeout            time.Duration
+	EnableHybridSearch        bool
+	EnableRerank              bool
+	HybridCandidateMultiplier int
+	HybridRRFK                float64
+	RerankShortlistMultiplier int
+	PDFOCRBridge              PDFOCRBridgeConfig
+	Logger                    Logger
+	Callbacks                 []Callback
 }
 
 // withDefaults 返回一个应用了 Phase 1 默认值的配置副本。
@@ -53,6 +56,15 @@ func (c Config) withDefaults() Config {
 	}
 	if c.RequestTimeout == 0 {
 		c.RequestTimeout = 30 * time.Second
+	}
+	if c.HybridCandidateMultiplier == 0 {
+		c.HybridCandidateMultiplier = 4
+	}
+	if c.HybridRRFK == 0 {
+		c.HybridRRFK = 60
+	}
+	if c.RerankShortlistMultiplier == 0 {
+		c.RerankShortlistMultiplier = 2
 	}
 	return c
 }
@@ -113,11 +125,17 @@ func (c Config) Validate() error {
 	if c.MaxIterations <= 0 {
 		return fmt.Errorf("max iterations must be positive: %w", ErrInvalidConfig)
 	}
-	if c.EnableHybridSearch {
-		return fmt.Errorf("enable hybrid search is phase 2: %w", ErrInvalidConfig)
+	if c.EnableRerank && !c.EnableHybridSearch {
+		return fmt.Errorf("enable rerank requires hybrid search: %w", ErrInvalidConfig)
 	}
-	if c.EnableRerank {
-		return fmt.Errorf("enable rerank is phase 2: %w", ErrInvalidConfig)
+	if c.HybridCandidateMultiplier <= 0 {
+		return fmt.Errorf("hybrid candidate multiplier must be positive: %w", ErrInvalidConfig)
+	}
+	if c.HybridRRFK <= 0 {
+		return fmt.Errorf("hybrid rrf k must be positive: %w", ErrInvalidConfig)
+	}
+	if c.RerankShortlistMultiplier <= 0 {
+		return fmt.Errorf("rerank shortlist multiplier must be positive: %w", ErrInvalidConfig)
 	}
 	if err := c.PDFOCRBridge.validate(); err != nil {
 		return err

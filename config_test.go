@@ -49,9 +49,45 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: ErrInvalidConfig,
 		},
 		{
-			name: "phase two flags rejected",
+			name: "hybrid search is now valid",
 			mutate: func(cfg *Config) {
 				cfg.EnableHybridSearch = true
+			},
+			wantErr: nil,
+		},
+		{
+			name: "rerank requires hybrid search",
+			mutate: func(cfg *Config) {
+				cfg.EnableRerank = true
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "rerank with hybrid search is valid",
+			mutate: func(cfg *Config) {
+				cfg.EnableHybridSearch = true
+				cfg.EnableRerank = true
+			},
+			wantErr: nil,
+		},
+		{
+			name: "hybrid candidate multiplier must be positive",
+			mutate: func(cfg *Config) {
+				cfg.HybridCandidateMultiplier = -1
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "hybrid rrf k must be positive",
+			mutate: func(cfg *Config) {
+				cfg.HybridRRFK = -1
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "rerank shortlist multiplier must be positive",
+			mutate: func(cfg *Config) {
+				cfg.RerankShortlistMultiplier = -1
 			},
 			wantErr: ErrInvalidConfig,
 		},
@@ -211,6 +247,15 @@ func TestConfigWithDefaults(t *testing.T) {
 				}
 				if got.RequestTimeout != 30*time.Second {
 					t.Fatalf("withDefaults() RequestTimeout = %v, want %v", got.RequestTimeout, 30*time.Second)
+				}
+				if got.HybridCandidateMultiplier != 4 {
+					t.Fatalf("withDefaults() HybridCandidateMultiplier = %d, want 4", got.HybridCandidateMultiplier)
+				}
+				if got.HybridRRFK != 60 {
+					t.Fatalf("withDefaults() HybridRRFK = %v, want 60", got.HybridRRFK)
+				}
+				if got.RerankShortlistMultiplier != 2 {
+					t.Fatalf("withDefaults() RerankShortlistMultiplier = %d, want 2", got.RerankShortlistMultiplier)
 				}
 			},
 		},

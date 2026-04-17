@@ -23,6 +23,59 @@ type Callback interface {
 	OnModelEnd(ctx context.Context, model string, err error)
 }
 
+// RetrievalMetrics 描述一次检索阶段的聚合指标。
+type RetrievalMetrics struct {
+	Duration              time.Duration
+	HybridEnabled         bool
+	RerankEnabled         bool
+	VectorCandidateCount  int
+	LexicalCandidateCount int
+	FusedCandidateCount   int
+	RerankShortlistCount  int
+	FinalHitCount         int
+}
+
+// ModelMetrics 描述一次模型调用的聚合指标。
+type ModelMetrics struct {
+	Model       string
+	Duration    time.Duration
+	Stream      bool
+	OutputChars int
+}
+
+const (
+	// FallbackStageHybrid 表示 hybrid 阶段降级。
+	FallbackStageHybrid = "hybrid"
+	// FallbackStageRerank 表示 rerank 阶段降级。
+	FallbackStageRerank = "rerank"
+	// FallbackTargetVectorOnly 表示退回 vector-only。
+	FallbackTargetVectorOnly = "vector_only"
+	// FallbackTargetHybrid 表示退回未 rerank 的 hybrid 结果。
+	FallbackTargetHybrid = "hybrid"
+)
+
+// FallbackEvent 描述一次运行时降级事件。
+type FallbackEvent struct {
+	Stage      string
+	FallbackTo string
+	Err        error
+}
+
+// RetrievalMetricsCallback 是可选的检索指标回调接口。
+type RetrievalMetricsCallback interface {
+	OnRetrieveMetrics(ctx context.Context, metrics RetrievalMetrics)
+}
+
+// ModelMetricsCallback 是可选的模型指标回调接口。
+type ModelMetricsCallback interface {
+	OnModelMetrics(ctx context.Context, metrics ModelMetrics)
+}
+
+// FallbackCallback 是可选的降级事件回调接口。
+type FallbackCallback interface {
+	OnFallback(ctx context.Context, event FallbackEvent)
+}
+
 // EventType 标识流式事件的类型。
 type EventType string
 

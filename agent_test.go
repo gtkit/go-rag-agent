@@ -39,11 +39,11 @@ func (f *fakeStore) Upsert(_ context.Context, chunks []storage.ChunkRecord) erro
 	return nil
 }
 
-func (f *fakeStore) Search(_ context.Context, _ []float32, _ int, _ float32) ([]storage.SearchHit, error) {
-	return f.SearchWithFilter(context.Background(), nil, 0, 0, storage.SearchFilter{})
+func (f *fakeStore) Search(_ context.Context, _ []float32, topK int, threshold float32) ([]storage.SearchHit, error) {
+	return f.SearchWithFilter(context.Background(), nil, topK, threshold, storage.SearchFilter{})
 }
 
-func (f *fakeStore) SearchWithFilter(_ context.Context, _ []float32, _ int, _ float32, filter storage.SearchFilter) ([]storage.SearchHit, error) {
+func (f *fakeStore) SearchWithFilter(_ context.Context, _ []float32, topK int, threshold float32, filter storage.SearchFilter) ([]storage.SearchHit, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -52,7 +52,7 @@ func (f *fakeStore) SearchWithFilter(_ context.Context, _ []float32, _ int, _ fl
 	if f.searchErr != nil {
 		return nil, f.searchErr
 	}
-	return filterHitsForTest(f.searchHits, filter), nil
+	return filterHitsForTest(f.searchHits, filter, topK, threshold), nil
 }
 
 func (f *fakeStore) DeleteBySourcePaths(_ context.Context, sourcePaths []string) error {
@@ -81,17 +81,23 @@ func (f *fakeStore) DeleteBySourcePaths(_ context.Context, sourcePaths []string)
 
 func (f *fakeStore) Close() error { return nil }
 
-func filterHitsForTest(hits []storage.SearchHit, filter storage.SearchFilter) []storage.SearchHit {
+func filterHitsForTest(hits []storage.SearchHit, filter storage.SearchFilter, topK int, threshold float32) []storage.SearchHit {
 	if len(hits) == 0 {
 		return nil
 	}
 
 	filtered := make([]storage.SearchHit, 0, len(hits))
 	for _, hit := range hits {
+		if hit.Score < threshold {
+			continue
+		}
 		if !matchesSearchFilterForTest(hit.Chunk, filter) {
 			continue
 		}
 		filtered = append(filtered, hit)
+	}
+	if topK > 0 && len(filtered) > topK {
+		filtered = filtered[:topK]
 	}
 	return filtered
 }
@@ -206,6 +212,38 @@ func (r *callbackRecorder) snapshot() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.events)
+}
+
+type detailedCallbackRecorder struct {
+	callbackRecorder
+	mu              sync.Mutex
+	retrieveMetrics []RetrievalMetrics
+	modelMetrics    []ModelMetrics
+	fallbacks       []FallbackEvent
+}
+
+func (r *detailedCallbackRecorder) OnRetrieveMetrics(_ context.Context, metrics RetrievalMetrics) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.retrieveMetrics = append(r.retrieveMetrics, metrics)
+}
+
+func (r *detailedCallbackRecorder) OnModelMetrics(_ context.Context, metrics ModelMetrics) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.modelMetrics = append(r.modelMetrics, metrics)
+}
+
+func (r *detailedCallbackRecorder) OnFallback(_ context.Context, event FallbackEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fallbacks = append(r.fallbacks, event)
+}
+
+func (r *detailedCallbackRecorder) snapshotMetrics() ([]RetrievalMetrics, []ModelMetrics, []FallbackEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.retrieveMetrics), slices.Clone(r.modelMetrics), slices.Clone(r.fallbacks)
 }
 
 type panicCallback struct {
@@ -614,6 +652,342 @@ func TestSessionAskWithOptionsFiltersRetrieval(t *testing.T) {
 
 			if tc.wantErr == nil && !slices.Equal(answer.Citations, tc.wantCitations) {
 				t.Fatalf("AskWithOptions() citations = %#v, want %#v", answer.Citations, tc.wantCitations)
+			}
+		})
+	}
+}
+
+func TestSessionAskWithHybridRetrievalPromotesLexicalHit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		cfg         Config
+		wantChunkID string
+		wantTitle   string
+	}{
+		{
+			name: "vector only keeps original ranking",
+			cfg: Config{
+				TopK:                1,
+				SimilarityThreshold: 0.5,
+				ChatModel:           "chat-test",
+				MaxHistoryRounds:    8,
+			},
+			wantChunkID: "semantic:0",
+			wantTitle:   "Overview",
+		},
+		{
+			name: "hybrid search promotes lexical exact match",
+			cfg: Config{
+				TopK:                1,
+				SimilarityThreshold: 0.5,
+				ChatModel:           "chat-test",
+				MaxHistoryRounds:    8,
+				EnableHybridSearch:  true,
+			},
+			wantChunkID: "gateway:0",
+			wantTitle:   "Gateway API",
+		},
+		{
+			name: "rerank keeps lexical exact match at top of shortlist",
+			cfg: Config{
+				TopK:                1,
+				SimilarityThreshold: 0.5,
+				ChatModel:           "chat-test",
+				MaxHistoryRounds:    8,
+				EnableHybridSearch:  true,
+				EnableRerank:        true,
+			},
+			wantChunkID: "gateway:0",
+			wantTitle:   "Gateway API",
+		},
+	}
+
+	searchHits := []storage.SearchHit{
+		{
+			Chunk: storage.ChunkRecord{
+				ChunkID:   "semantic:0",
+				Title:     "Overview",
+				Text:      "semantic overview without exact tokens",
+				StartRune: 0,
+				EndRune:   36,
+			},
+			Score: 0.99,
+		},
+		{
+			Chunk: storage.ChunkRecord{
+				ChunkID:   "gateway:0",
+				Title:     "Gateway API",
+				Text:      "gateway api exact match terms appear here",
+				StartRune: 0,
+				EndRune:   40,
+			},
+			Score: 0.80,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := &fakeStore{searchHits: searchHits}
+			embedder := &fakeEmbedder{defaultVec: []float32{1, 0}}
+			runner := &fakeRunner{answer: "answer"}
+			a := &Agent{
+				cfg:      tc.cfg,
+				store:    store,
+				embedder: embedder,
+				runner:   runner,
+				sessions: make(map[string]*Session),
+			}
+
+			answer, err := a.GetSession("hybrid").Ask(context.Background(), "gateway api")
+			if err != nil {
+				t.Fatalf("Ask() error = %v", err)
+			}
+			if len(answer.Citations) != 1 {
+				t.Fatalf("Ask() citations len = %d, want 1", len(answer.Citations))
+			}
+			if answer.Citations[0].ChunkID != tc.wantChunkID {
+				t.Fatalf("Ask() citation chunk = %q, want %q", answer.Citations[0].ChunkID, tc.wantChunkID)
+			}
+			if answer.Citations[0].Title != tc.wantTitle {
+				t.Fatalf("Ask() citation title = %q, want %q", answer.Citations[0].Title, tc.wantTitle)
+			}
+		})
+	}
+}
+
+func TestSessionAskWithHybridCandidateMultiplierAffectsPromotion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		cfg         Config
+		wantChunkID string
+	}{
+		{
+			name: "candidate multiplier one keeps vector winner on tie",
+			cfg: Config{
+				TopK:                      1,
+				SimilarityThreshold:       0.5,
+				ChatModel:                 "chat-test",
+				MaxHistoryRounds:          8,
+				EnableHybridSearch:        true,
+				HybridCandidateMultiplier: 1,
+			},
+			wantChunkID: "semantic:0",
+		},
+		{
+			name: "candidate multiplier two gives lexical hit enough room to win",
+			cfg: Config{
+				TopK:                      1,
+				SimilarityThreshold:       0.5,
+				ChatModel:                 "chat-test",
+				MaxHistoryRounds:          8,
+				EnableHybridSearch:        true,
+				HybridCandidateMultiplier: 2,
+			},
+			wantChunkID: "gateway:0",
+		},
+	}
+
+	searchHits := []storage.SearchHit{
+		{
+			Chunk: storage.ChunkRecord{
+				ChunkID:   "semantic:0",
+				Title:     "Overview",
+				Text:      "semantic overview without exact tokens",
+				StartRune: 0,
+				EndRune:   36,
+			},
+			Score: 0.99,
+		},
+		{
+			Chunk: storage.ChunkRecord{
+				ChunkID:   "gateway:0",
+				Title:     "Gateway API",
+				Text:      "gateway api exact match terms appear here",
+				StartRune: 0,
+				EndRune:   40,
+			},
+			Score: 0.80,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := &fakeStore{searchHits: searchHits}
+			embedder := &fakeEmbedder{defaultVec: []float32{1, 0}}
+			runner := &fakeRunner{answer: "answer"}
+			a := &Agent{
+				cfg:      tc.cfg,
+				store:    store,
+				embedder: embedder,
+				runner:   runner,
+				sessions: make(map[string]*Session),
+			}
+
+			answer, err := a.GetSession("hybrid-multiplier").Ask(context.Background(), "gateway api")
+			if err != nil {
+				t.Fatalf("Ask() error = %v", err)
+			}
+			if len(answer.Citations) != 1 {
+				t.Fatalf("Ask() citations len = %d, want 1", len(answer.Citations))
+			}
+			if answer.Citations[0].ChunkID != tc.wantChunkID {
+				t.Fatalf("Ask() citation chunk = %q, want %q", answer.Citations[0].ChunkID, tc.wantChunkID)
+			}
+		})
+	}
+}
+
+func TestAskEmitsDetailedMetricsAndFallbacks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		cfg                Config
+		wantChunkID        string
+		wantFallbackStage  string
+		wantFallbackTarget string
+	}{
+		{
+			name: "hybrid metrics emitted without fallback",
+			cfg: Config{
+				TopK:                1,
+				SimilarityThreshold: 0.5,
+				ChatModel:           "chat-test",
+				MaxHistoryRounds:    8,
+				EnableHybridSearch:  true,
+			},
+			wantChunkID: "gateway:0",
+		},
+		{
+			name: "invalid hybrid tuning falls back to vector only",
+			cfg: Config{
+				TopK:                      1,
+				SimilarityThreshold:       0.5,
+				ChatModel:                 "chat-test",
+				MaxHistoryRounds:          8,
+				EnableHybridSearch:        true,
+				HybridCandidateMultiplier: -1,
+			},
+			wantChunkID:        "semantic:0",
+			wantFallbackStage:  FallbackStageHybrid,
+			wantFallbackTarget: FallbackTargetVectorOnly,
+		},
+		{
+			name: "invalid rerank tuning falls back to hybrid",
+			cfg: Config{
+				TopK:                      1,
+				SimilarityThreshold:       0.5,
+				ChatModel:                 "chat-test",
+				MaxHistoryRounds:          8,
+				EnableHybridSearch:        true,
+				EnableRerank:              true,
+				RerankShortlistMultiplier: -1,
+			},
+			wantChunkID:        "gateway:0",
+			wantFallbackStage:  FallbackStageRerank,
+			wantFallbackTarget: FallbackTargetHybrid,
+		},
+	}
+
+	searchHits := []storage.SearchHit{
+		{
+			Chunk: storage.ChunkRecord{
+				ChunkID:   "semantic:0",
+				Title:     "Overview",
+				Text:      "semantic overview without exact tokens",
+				StartRune: 0,
+				EndRune:   36,
+			},
+			Score: 0.99,
+		},
+		{
+			Chunk: storage.ChunkRecord{
+				ChunkID:   "gateway:0",
+				Title:     "Gateway API",
+				Text:      "gateway api exact match terms appear here",
+				StartRune: 0,
+				EndRune:   40,
+			},
+			Score: 0.80,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			recorder := &detailedCallbackRecorder{}
+			a := &Agent{
+				cfg:      tc.cfg,
+				store:    &fakeStore{searchHits: searchHits},
+				embedder: &fakeEmbedder{defaultVec: []float32{1, 0}},
+				runner:   &fakeRunner{answer: "answer"},
+				dispatcher: telemetry.NewDispatcher([]telemetry.Callback{
+					recorder,
+				}),
+				callbacks: []Callback{recorder},
+				sessions:  make(map[string]*Session),
+			}
+
+			answer, err := a.GetSession("metrics").Ask(context.Background(), "gateway api")
+			if err != nil {
+				t.Fatalf("Ask() error = %v", err)
+			}
+			if len(answer.Citations) != 1 {
+				t.Fatalf("Ask() citations len = %d, want 1", len(answer.Citations))
+			}
+			if answer.Citations[0].ChunkID != tc.wantChunkID {
+				t.Fatalf("Ask() citation chunk = %q, want %q", answer.Citations[0].ChunkID, tc.wantChunkID)
+			}
+
+			retrieveMetrics, modelMetrics, fallbacks := recorder.snapshotMetrics()
+			if len(retrieveMetrics) != 1 {
+				t.Fatalf("retrieve metrics len = %d, want 1", len(retrieveMetrics))
+			}
+			if retrieveMetrics[0].FinalHitCount != 1 {
+				t.Fatalf("retrieve FinalHitCount = %d, want 1", retrieveMetrics[0].FinalHitCount)
+			}
+			if retrieveMetrics[0].Duration <= 0 {
+				t.Fatalf("retrieve Duration = %v, want positive", retrieveMetrics[0].Duration)
+			}
+			if len(modelMetrics) != 1 {
+				t.Fatalf("model metrics len = %d, want 1", len(modelMetrics))
+			}
+			if modelMetrics[0].OutputChars != len("answer") {
+				t.Fatalf("model OutputChars = %d, want %d", modelMetrics[0].OutputChars, len("answer"))
+			}
+			if modelMetrics[0].Duration <= 0 {
+				t.Fatalf("model Duration = %v, want positive", modelMetrics[0].Duration)
+			}
+
+			if tc.wantFallbackStage == "" {
+				if len(fallbacks) != 0 {
+					t.Fatalf("fallbacks = %v, want none", fallbacks)
+				}
+				return
+			}
+			if len(fallbacks) != 1 {
+				t.Fatalf("fallback len = %d, want 1", len(fallbacks))
+			}
+			if fallbacks[0].Stage != tc.wantFallbackStage {
+				t.Fatalf("fallback stage = %q, want %q", fallbacks[0].Stage, tc.wantFallbackStage)
+			}
+			if fallbacks[0].FallbackTo != tc.wantFallbackTarget {
+				t.Fatalf("fallback target = %q, want %q", fallbacks[0].FallbackTo, tc.wantFallbackTarget)
+			}
+			if fallbacks[0].Err == nil {
+				t.Fatal("fallback error = nil, want non-nil")
 			}
 		})
 	}
