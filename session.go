@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"sync"
 
-	"my-gtkit-package/go-rag-agent/internal/memory"
-	"my-gtkit-package/go-rag-agent/internal/rag"
-	"my-gtkit-package/go-rag-agent/internal/storage"
+	"github.com/gtkit/go-rag-agent/internal/memory"
+	"github.com/gtkit/go-rag-agent/internal/rag"
+	"github.com/gtkit/go-rag-agent/internal/storage"
 )
 
 // Session 保存一个绑定到 Agent 的会话状态。

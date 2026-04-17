@@ -11,9 +11,8 @@ import (
 	"github.com/cloudwego/eino/flow/agent/react"
 	"github.com/cloudwego/eino/schema"
 
-	"my-gtkit-package/go-rag-agent/internal/llm"
-	"my-gtkit-package/go-rag-agent/internal/memory"
-	"my-gtkit-package/go-rag-agent/internal/tools"
+	"github.com/gtkit/go-rag-agent/internal/llm"
+	"github.com/gtkit/go-rag-agent/internal/memory"
 )
 
 const defaultMaxIterations = 12
@@ -25,7 +24,7 @@ type ReactRunner struct {
 }
 
 // NewReactRunner 创建带检索工具的 ReAct runner。
-func NewReactRunner(ctx context.Context, model llm.ChatModel, retrievalTool *tools.RetrievalTool, maxIterations int) (*ReactRunner, error) {
+func NewReactRunner(ctx context.Context, model llm.ChatModel, maxIterations int, toolset ...einotool.BaseTool) (*ReactRunner, error) {
 	if model == nil {
 		return nil, fmt.Errorf("chat model is required")
 	}
@@ -34,12 +33,12 @@ func NewReactRunner(ctx context.Context, model llm.ChatModel, retrievalTool *too
 	}
 
 	var agentRunner *react.Agent
-	if retrievalTool != nil {
+	if len(toolset) > 0 {
 		// 这里假设当前 OpenAI-compatible 适配器会在流式输出早期暴露 tool call。
 		agent, err := react.NewAgent(ctx, &react.AgentConfig{
 			ToolCallingModel: model,
 			ToolsConfig: compose.ToolsNodeConfig{
-				Tools: []einotool.BaseTool{retrievalTool},
+				Tools: toolset,
 			},
 			MaxStep: maxIterations,
 		})
@@ -129,7 +128,7 @@ func emitStream(stream *schema.StreamReader[*schema.Message], emit StreamEmitter
 
 func buildPromptMessages(history []memory.Turn, evidenceText, query string) []*schema.Message {
 	msgs := make([]*schema.Message, 0, len(history)*2+3)
-	msgs = append(msgs, schema.SystemMessage("Answer with retrieved evidence first. If evidence is insufficient, say so explicitly."))
+	msgs = append(msgs, schema.SystemMessage("Answer with retrieved evidence first. If evidence is insufficient, use available tools. Prefer local retrieval before web search. If evidence is still insufficient, say so explicitly."))
 
 	for _, turn := range history {
 		if strings.TrimSpace(turn.User) != "" {

@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	"my-gtkit-package/go-rag-agent/internal/storage"
+	"github.com/gtkit/go-rag-agent/internal/storage"
 )
 
 func (o QueryOptions) storageFilter() storage.SearchFilter {

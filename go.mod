@@ -1,4 +1,4 @@
-module my-gtkit-package/go-rag-agent
+module github.com/gtkit/go-rag-agent
 
 go 1.26.2
 
@@ -6,6 +6,7 @@ require (
 	github.com/cloudwego/eino v0.7.13
 	github.com/cloudwego/eino-ext/components/embedding/openai v0.0.0-20260415031821-e2fcf1501241
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.12
+	github.com/gtkit/httpc v1.0.0
 	github.com/gtkit/json v0.2.10
 	github.com/jung-kurt/gofpdf v1.16.2
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
@@ -18,7 +19,7 @@ require (
 	github.com/buger/jsonparser v1.1.1 // indirect
 	github.com/bytedance/gopkg v0.1.4 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
-	github.com/bytedance/sonic/loader v0.5.0 // indirect
+	github.com/bytedance/sonic/loader v0.5.1 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/cloudwego/eino-ext/libs/acl/openai v0.1.16 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -27,6 +28,7 @@ require (
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/goph/emperror v0.17.2 // indirect
+	github.com/gtkit/json/v2 v2.0.2 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/kr/text v0.2.0 // indirect

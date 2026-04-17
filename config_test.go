@@ -178,6 +178,37 @@ func TestConfigValidate(t *testing.T) {
 			},
 			wantErr: nil,
 		},
+		{
+			name: "web search requires api key when enabled",
+			mutate: func(cfg *Config) {
+				cfg.EnableWebSearch = true
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "web search accepts complete configuration",
+			mutate: func(cfg *Config) {
+				cfg.EnableWebSearch = true
+				cfg.WebSearch = WebSearchConfig{
+					APIKey:      "tvly-test",
+					MaxResults:  5,
+					SearchDepth: "basic",
+					Topic:       "general",
+				}
+			},
+			wantErr: nil,
+		},
+		{
+			name: "web search rejects invalid depth",
+			mutate: func(cfg *Config) {
+				cfg.EnableWebSearch = true
+				cfg.WebSearch = WebSearchConfig{
+					APIKey:      "tvly-test",
+					SearchDepth: "bad",
+				}
+			},
+			wantErr: ErrInvalidConfig,
+		},
 	}
 
 	for _, tc := range tests {

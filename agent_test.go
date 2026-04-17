@@ -15,11 +15,11 @@ import (
 
 	"github.com/jung-kurt/gofpdf"
 
-	"my-gtkit-package/go-rag-agent/internal/graph"
-	"my-gtkit-package/go-rag-agent/internal/memory"
-	"my-gtkit-package/go-rag-agent/internal/rag"
-	"my-gtkit-package/go-rag-agent/internal/storage"
-	"my-gtkit-package/go-rag-agent/internal/telemetry"
+	"github.com/gtkit/go-rag-agent/internal/graph"
+	"github.com/gtkit/go-rag-agent/internal/memory"
+	"github.com/gtkit/go-rag-agent/internal/rag"
+	"github.com/gtkit/go-rag-agent/internal/storage"
+	"github.com/gtkit/go-rag-agent/internal/telemetry"
 )
 
 type fakeStore struct {
@@ -990,6 +990,41 @@ func TestAskEmitsDetailedMetricsAndFallbacks(t *testing.T) {
 				t.Fatal("fallback error = nil, want non-nil")
 			}
 		})
+	}
+}
+
+func TestAskFallsBackToWebSearchPathWhenLocalEvidenceInsufficient(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{
+		cfg: Config{
+			TopK:                5,
+			SimilarityThreshold: 0.5,
+			ChatModel:           "chat-test",
+			MaxHistoryRounds:    8,
+			EnableWebSearch:     true,
+			WebSearch: WebSearchConfig{
+				APIKey:      "tvly-test",
+				MaxResults:  5,
+				SearchDepth: "basic",
+				Topic:       "general",
+			},
+		},
+		store:    &fakeStore{searchHits: nil},
+		embedder: &fakeEmbedder{defaultVec: []float32{1, 0}},
+		runner:   &fakeRunner{answer: "web answer"},
+		sessions: make(map[string]*Session),
+	}
+
+	answer, err := a.GetSession("web-search-fallback").Ask(context.Background(), "latest news")
+	if err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+	if answer.Text != "web answer" {
+		t.Fatalf("Ask() text = %q, want %q", answer.Text, "web answer")
+	}
+	if len(answer.Citations) != 0 {
+		t.Fatalf("Ask() citations = %#v, want no local citations", answer.Citations)
 	}
 }
 

@@ -9,7 +9,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	gtjson "github.com/gtkit/json"
 
-	"my-gtkit-package/go-rag-agent/internal/storage"
+	"github.com/gtkit/go-rag-agent/internal/storage"
 )
 
 const retrievalToolName = "retrieve_context"

@@ -2,7 +2,7 @@ package ragagent
 
 import (
 	"fmt"
-	"my-gtkit-package/go-rag-agent/internal/llm"
+	"github.com/gtkit/go-rag-agent/internal/llm"
 	"strings"
 	"time"
 )
@@ -28,10 +28,12 @@ type Config struct {
 	RequestTimeout            time.Duration
 	EnableHybridSearch        bool
 	EnableRerank              bool
+	EnableWebSearch           bool
 	HybridCandidateMultiplier int
 	HybridRRFK                float64
 	RerankShortlistMultiplier int
 	PDFOCRBridge              PDFOCRBridgeConfig
+	WebSearch                 WebSearchConfig
 	Logger                    Logger
 	Callbacks                 []Callback
 }
@@ -78,6 +80,7 @@ func (c Config) normalized() Config {
 	c.EmbeddingAPIKey = strings.TrimSpace(c.EmbeddingAPIKey)
 	c.DataDir = strings.TrimSpace(c.DataDir)
 	c.PDFOCRBridge = c.PDFOCRBridge.normalized()
+	c.WebSearch = c.WebSearch.normalized()
 	return c
 }
 
@@ -136,6 +139,9 @@ func (c Config) Validate() error {
 	}
 	if c.RerankShortlistMultiplier <= 0 {
 		return fmt.Errorf("rerank shortlist multiplier must be positive: %w", ErrInvalidConfig)
+	}
+	if err := c.WebSearch.validate(c.EnableWebSearch); err != nil {
+		return err
 	}
 	if err := c.PDFOCRBridge.validate(); err != nil {
 		return err

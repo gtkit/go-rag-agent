@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	ragagent "my-gtkit-package/go-rag-agent"
+	ragagent "github.com/gtkit/go-rag-agent"
 )
 
 func ExampleConfig_Validate() {

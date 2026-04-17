@@ -3,7 +3,7 @@ package graph
 import (
 	"context"
 
-	"my-gtkit-package/go-rag-agent/internal/memory"
+	"github.com/gtkit/go-rag-agent/internal/memory"
 )
 
 // Request 表示内部 graph 层的请求输入。

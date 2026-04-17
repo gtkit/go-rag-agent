@@ -8,16 +8,16 @@
 
 ## 安装
 
-当前模块路径是 `my-gtkit-package/go-rag-agent`，它在这个仓库里按本地/内部模块路径使用。
+当前模块路径是 `github.com/gtkit/go-rag-agent`。
 
 推荐在本地工作区或内部代码仓中引用它，而不是按公网模块直接 `go get`。
 
 示例：
 
 ```go
-require my-gtkit-package/go-rag-agent v0.0.0
+require github.com/gtkit/go-rag-agent v0.0.0
 
-replace my-gtkit-package/go-rag-agent => ../go-rag-agent
+replace github.com/gtkit/go-rag-agent => ../go-rag-agent
 ```
 
 ## 快速开始
@@ -33,7 +33,7 @@ import (
 	"path/filepath"
 	"time"
 
-	ragagent "my-gtkit-package/go-rag-agent"
+	ragagent "github.com/gtkit/go-rag-agent"
 )
 
 func main() {
@@ -95,6 +95,7 @@ func main() {
 - `RequestTimeout`（默认 `30s`）
 - `EnableHybridSearch`（默认 `false`）
 - `EnableRerank`（默认 `false`）
+- `EnableWebSearch`（默认 `false`）
 - `HybridCandidateMultiplier`（默认 `4`）
 - `HybridRRFK`（默认 `60`）
 - `RerankShortlistMultiplier`（默认 `2`）
@@ -105,6 +106,7 @@ func main() {
 - `ChunkSize` 必须不超过当前证据拼装预算（`<= 4000` rune）。
 - `ChunkOverlap` 必须满足 `>= 0` 且 `< ChunkSize`。
 - `EnableRerank` 只能在 `EnableHybridSearch=true` 时启用。
+- `EnableWebSearch=true` 时必须提供有效的 `WebSearch.APIKey`。
 - `HybridCandidateMultiplier` 必须是正数。
 - `HybridRRFK` 必须是正数。
 - `RerankShortlistMultiplier` 必须是正数。
@@ -296,6 +298,49 @@ go test -bench=. -run '^$' ./internal/retrieval ./internal/storage
 - vector-only
 - hybrid
 - hybrid + rerank
+
+## 联网搜索
+
+当前库支持可选的联网搜索能力，首个 provider 是 Tavily。
+
+设计原则：
+- 本地知识库优先
+- 只有在本地证据不足时才进入联网搜索路径
+- 联网搜索通过 `github.com/gtkit/httpc` 完成 HTTP JSON 请求
+
+配置示例：
+
+```go
+cfg := ragagent.Config{
+	ChatModel:      "gpt-4o-mini",
+	ChatBaseURL:    "https://api.openai.example/v1",
+	ChatAPIKey:     "replace-with-your-chat-key",
+	EmbeddingModel: "text-embedding-3-small",
+	EmbeddingAPIKey:"replace-with-your-embedding-key",
+	EnableWebSearch: true,
+	WebSearch: ragagent.WebSearchConfig{
+		APIKey:      "tvly-your-key",
+		MaxResults:  5,
+		SearchDepth: "basic",
+		Topic:       "general",
+	},
+}
+```
+
+可选项：
+- `BaseURL`
+  说明：默认 `https://api.tavily.com/search`
+- `MaxResults`
+  说明：默认 `5`
+- `SearchDepth`
+  说明：支持 `basic` / `advanced`，默认 `basic`
+- `Topic`
+  说明：支持 `general` / `news`，默认 `general`
+
+当前限制：
+- 首版只接 Tavily，不支持多 provider 自动切换
+- 远程搜索结果当前作为工具文本提供给模型，不进入 `Answer.Citations`
+- 本地证据充足时不会主动联网搜索
 
 ## 可观测性与降级
 

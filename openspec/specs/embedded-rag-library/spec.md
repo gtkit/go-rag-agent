@@ -97,6 +97,10 @@
 - **WHEN** 原知识库中存在相关内容，但它们都被本次查询的检索过滤条件排除
 - **THEN** 库 MUST 返回证据不足错误，而不是退回到全库检索
 
+#### Scenario: 本地证据不足时允许进入联网搜索路径
+- **WHEN** 本地检索返回证据不足，且调用方已启用联网搜索配置
+- **THEN** 库 MUST 允许问答流程进入带工具的联网搜索路径，而不是直接返回证据不足
+
 #### Scenario: hybrid retrieval 可以提升 lexical 命中的证据排序
 - **WHEN** 调用方启用 `EnableHybridSearch`，且查询包含强 lexical 信号而纯向量排序无法把最佳证据排到前列
 - **THEN** 库 MUST 通过 vector + lexical 融合，把更合适的候选提升到最终证据集合中
@@ -139,6 +143,10 @@
 #### Scenario: hybrid retrieval 与 rerank 在流式路径同样生效
 - **WHEN** 调用方在流式问答中启用 `EnableHybridSearch` 或 `EnableRerank`
 - **THEN** 库 MUST 在流式路径使用与同步问答一致的检索和排序策略
+
+#### Scenario: 本地证据不足时流式路径也允许联网搜索
+- **WHEN** 流式问答中的本地检索返回证据不足，且调用方已启用联网搜索配置
+- **THEN** 库 MUST 进入带工具的联网搜索路径，而不是直接结束流式问答
 
 ### Requirement: 有道笔记桥接导入
 系统 SHALL 提供一个知识源，通过本地安装的有道笔记 CLI 桥接命令把笔记导出到临时目录，再按常规本地文件导入流程完成导入。

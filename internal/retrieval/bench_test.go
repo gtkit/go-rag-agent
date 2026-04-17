@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"my-gtkit-package/go-rag-agent/internal/storage"
+	"github.com/gtkit/go-rag-agent/internal/storage"
 )
 
 func BenchmarkRetrievalModes(b *testing.B) {

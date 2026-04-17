@@ -9,6 +9,8 @@
 
 ## [Unreleased]
 
+## [v0.2.0] - 2026-04-17
+
 ### Added
 - Hybrid retrieval（向量召回 + lexical recall）与可选 rerank
 - hybrid/rerank 调优参数：
@@ -23,13 +25,24 @@
 - 运行时降级事件：
   - hybrid 失败退回 `vector_only`
   - rerank 失败退回 `hybrid`
+- 可选联网搜索能力：
+  - `EnableWebSearch`
+  - `WebSearchConfig`
+  - Tavily provider
+  - `search_web` tool
+- 新增 `runtime-observability` 与 `web-search-tool` 主 specs
+- 发布文档：
+  - `VERSIONING.md`
+  - 企业级 release/tag 规则
 
 ### Changed
 - `EnableHybridSearch` 从“被拒绝”调整为可实际启用
 - `EnableRerank` 从“被拒绝”调整为可在 hybrid 开启时启用
+- 模块路径切换为 `github.com/gtkit/go-rag-agent`
 - README 增加企业级调参和观测说明
+- README 增加联网搜索启用方式和限制
 
-## [2026-04-17]
+## [v0.1.0] - 2026-04-17
 
 ### Added
 - 本地 `.txt` / `.md` / `.pdf` 导入

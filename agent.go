@@ -10,14 +10,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	"my-gtkit-package/go-rag-agent/internal/graph"
-	"my-gtkit-package/go-rag-agent/internal/llm"
-	"my-gtkit-package/go-rag-agent/internal/memory"
-	"my-gtkit-package/go-rag-agent/internal/rag"
-	"my-gtkit-package/go-rag-agent/internal/retrieval"
-	"my-gtkit-package/go-rag-agent/internal/storage"
-	"my-gtkit-package/go-rag-agent/internal/telemetry"
-	"my-gtkit-package/go-rag-agent/internal/tools"
+	einotool "github.com/cloudwego/eino/components/tool"
+
+	"github.com/gtkit/go-rag-agent/internal/graph"
+	"github.com/gtkit/go-rag-agent/internal/llm"
+	"github.com/gtkit/go-rag-agent/internal/memory"
+	"github.com/gtkit/go-rag-agent/internal/rag"
+	"github.com/gtkit/go-rag-agent/internal/retrieval"
+	"github.com/gtkit/go-rag-agent/internal/storage"
+	"github.com/gtkit/go-rag-agent/internal/telemetry"
+	"github.com/gtkit/go-rag-agent/internal/tools"
 )
 
 const (
@@ -268,7 +270,11 @@ func New(cfg Config) (*Agent, error) {
 	retrievalTool := tools.NewRetrievalTool(
 		newRootRetriever(store, embedder, cfg.TopK, float32(cfg.SimilarityThreshold), storage.SearchFilter{}, cfg.EnableHybridSearch, cfg.EnableRerank, retrievalOptions),
 	)
-	runner, err := graph.NewReactRunner(ctx, chatModel, retrievalTool, cfg.MaxIterations)
+	toolset := []einotool.BaseTool{retrievalTool}
+	if webSearcher := newWebSearcher(cfg); webSearcher != nil {
+		toolset = append(toolset, tools.NewWebSearchTool(webSearcher))
+	}
+	runner, err := graph.NewReactRunner(ctx, chatModel, cfg.MaxIterations, toolset...)
 	if err != nil {
 		_ = store.Close()
 		return nil, fmt.Errorf("create react runner: %w", err)
@@ -553,7 +559,12 @@ func (a *Agent) askLocked(ctx context.Context, s *Session, query string, opts Qu
 	rewrittenQuery := rag.RewriteFollowUp(query, s.history.LastUserQueries())
 	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery, opts.storageFilter())
 	if err != nil {
-		return Answer{}, err
+		if a.cfg.EnableWebSearch && errors.Is(err, ErrEvidenceInsufficient) {
+			hits = nil
+			evidenceText = ""
+		} else {
+			return Answer{}, err
+		}
 	}
 
 	modelStartedAt := time.Now()
@@ -625,13 +636,18 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 
 	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery, filter)
 	if err != nil {
-		if emitErr := emitEvent(StreamEvent{Type: EventRetrieveEnd, Err: err}); emitErr != nil {
-			return "", emitErr
+		if a.cfg.EnableWebSearch && errors.Is(err, ErrEvidenceInsufficient) {
+			hits = nil
+			evidenceText = ""
+		} else {
+			if emitErr := emitEvent(StreamEvent{Type: EventRetrieveEnd, Err: err}); emitErr != nil {
+				return "", emitErr
+			}
+			if emitErr := emitEvent(StreamEvent{Type: EventToolEnd, ToolName: retrieveToolName, Err: err}); emitErr != nil {
+				return "", emitErr
+			}
+			return "", emitError(err)
 		}
-		if emitErr := emitEvent(StreamEvent{Type: EventToolEnd, ToolName: retrieveToolName, Err: err}); emitErr != nil {
-			return "", emitErr
-		}
-		return "", emitError(err)
 	}
 	if err := emitEvent(StreamEvent{Type: EventRetrieveEnd}); err != nil {
 		return "", err

@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"my-gtkit-package/go-rag-agent/internal/storage"
+	"github.com/gtkit/go-rag-agent/internal/storage"
 )
 
 func TestLexicalSearch(t *testing.T) {

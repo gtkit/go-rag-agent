@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	ragagent "my-gtkit-package/go-rag-agent"
+	ragagent "github.com/gtkit/go-rag-agent"
 )
 
 func main() {

@@ -8,7 +8,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
-	"my-gtkit-package/go-rag-agent/internal/memory"
+	"github.com/gtkit/go-rag-agent/internal/memory"
 )
 
 type fakeChatModel struct {
@@ -65,7 +65,7 @@ func TestBuildPromptMessages(t *testing.T) {
 				schema.User,
 			},
 			wantContents: []string{
-				"Answer with retrieved evidence first. If evidence is insufficient, say so explicitly.",
+				"Answer with retrieved evidence first. If evidence is insufficient, use available tools. Prefer local retrieval before web search. If evidence is still insufficient, say so explicitly.",
 				"what is rag?",
 				"rag is retrieval-augmented generation",
 				"what are chunks?",

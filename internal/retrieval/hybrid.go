@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode"
 
-	"my-gtkit-package/go-rag-agent/internal/storage"
+	"github.com/gtkit/go-rag-agent/internal/storage"
 )
 
 // LexicalSearch 根据 query token 与候选文本的命中情况返回 lexical 排名。

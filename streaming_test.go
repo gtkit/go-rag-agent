@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"my-gtkit-package/go-rag-agent/internal/graph"
-	"my-gtkit-package/go-rag-agent/internal/storage"
-	"my-gtkit-package/go-rag-agent/internal/telemetry"
+	"github.com/gtkit/go-rag-agent/internal/graph"
+	"github.com/gtkit/go-rag-agent/internal/storage"
+	"github.com/gtkit/go-rag-agent/internal/telemetry"
 )
 
 type fakeStreamingRunner struct {
@@ -560,6 +560,56 @@ func TestAskStreamEmitsDetailedModelMetrics(t *testing.T) {
 	}
 	if len(fallbacks) != 0 {
 		t.Fatalf("fallbacks = %v, want none", fallbacks)
+	}
+}
+
+func TestAskStreamFallsBackToWebSearchPathWhenLocalEvidenceInsufficient(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{
+		cfg: Config{
+			TopK:                5,
+			SimilarityThreshold: 0.5,
+			MaxHistoryRounds:    8,
+			EnableWebSearch:     true,
+			WebSearch: WebSearchConfig{
+				APIKey:      "tvly-test",
+				MaxResults:  5,
+				SearchDepth: "basic",
+				Topic:       "general",
+			},
+		},
+		store:    &fakeStore{searchHits: nil},
+		embedder: &fakeEmbedder{defaultVec: []float32{1, 0}},
+		runner: &fakeStreamingRunner{
+			askStreamFn: func(_ context.Context, req graph.Request, emit graph.StreamEmitter) error {
+				if req.EvidenceText != "" {
+					t.Fatalf("AskStream fallback request EvidenceText = %q, want empty", req.EvidenceText)
+				}
+				if err := emit(graph.Event{Type: graph.EventAnswerChunk, Content: "web "}); err != nil {
+					return err
+				}
+				if err := emit(graph.Event{Type: graph.EventAnswerChunk, Content: "answer"}); err != nil {
+					return err
+				}
+				return emit(graph.Event{Type: graph.EventDone})
+			},
+		},
+		sessions: make(map[string]*Session),
+	}
+
+	var chunks []string
+	err := a.GetSession("web-search-stream").AskStream(context.Background(), "latest news", func(event StreamEvent) error {
+		if event.Type == EventAnswerChunk {
+			chunks = append(chunks, event.Content)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("AskStream() error = %v", err)
+	}
+	if got := strings.Join(chunks, ""); got != "web answer" {
+		t.Fatalf("AskStream() chunks = %q, want %q", got, "web answer")
 	}
 }
 
