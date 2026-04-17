@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestChromemStoreUpsertAndSearch(t *testing.T) {
@@ -556,6 +558,101 @@ func TestChromemStoreUpsertPostAddCancellationCleansStaleAndReturnsContextError(
 				t.Fatalf("Search() title = %q, want %q", got[0].Chunk.Title, tc.wantFirstTitle)
 			}
 		})
+	}
+}
+
+func TestChromemStoreUpsertSerializesConcurrentCalls(t *testing.T) {
+	t.Parallel()
+
+	store, err := NewChromemStore(Config{})
+	if err != nil {
+		t.Fatalf("NewChromemStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := store.Close(); cerr != nil {
+			t.Fatalf("Close() error = %v", cerr)
+		}
+	})
+
+	firstEntered := make(chan struct{}, 1)
+	releaseFirst := make(chan struct{})
+	var hookCount atomic.Int32
+	store.afterAddHook = func() {
+		if hookCount.Add(1) != 1 {
+			return
+		}
+		select {
+		case firstEntered <- struct{}{}:
+		default:
+		}
+		<-releaseFirst
+	}
+
+	firstChunks := []ChunkRecord{
+		{
+			ChunkID:    "doc-a:0",
+			ParentID:   "doc-a",
+			SourcePath: "/kb/a.md",
+			Title:      "A",
+			Text:       "alpha",
+			StartRune:  0,
+			EndRune:    5,
+			Embedding:  []float32{1, 0},
+		},
+	}
+	secondChunks := []ChunkRecord{
+		{
+			ChunkID:    "doc-b:0",
+			ParentID:   "doc-b",
+			SourcePath: "/kb/b.md",
+			Title:      "B",
+			Text:       "beta",
+			StartRune:  0,
+			EndRune:    4,
+			Embedding:  []float32{0, 1},
+		},
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- store.Upsert(context.Background(), firstChunks)
+	}()
+
+	select {
+	case <-firstEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Upsert did not reach afterAddHook")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- store.Upsert(context.Background(), secondChunks)
+	}()
+
+	select {
+	case err := <-secondDone:
+		t.Fatalf("second Upsert finished before first released: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(releaseFirst)
+
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("first Upsert() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Upsert did not finish after release")
+	}
+
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("second Upsert() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second Upsert did not finish after first completed")
 	}
 }
 

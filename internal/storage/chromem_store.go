@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	chromem "github.com/philippgille/chromem-go"
 )
@@ -27,6 +28,7 @@ const (
 type ChromemStore struct {
 	db         *chromem.DB
 	collection *chromem.Collection
+	upsertMu   sync.Mutex
 	// afterAddHook is test-only and runs after add/overwrite, before stale cleanup.
 	afterAddHook func()
 }
@@ -63,6 +65,9 @@ func NewChromemStore(cfg Config) (*ChromemStore, error) {
 }
 
 func (s *ChromemStore) Upsert(ctx context.Context, chunks []ChunkRecord) error {
+	s.upsertMu.Lock()
+	defer s.upsertMu.Unlock()
+
 	if len(chunks) == 0 {
 		return nil
 	}
