@@ -770,6 +770,93 @@ func TestAskTelemetryCallbackReentryFailsFast(t *testing.T) {
 	}
 }
 
+func TestTelemetryCallbackOnOneSessionDoesNotBlockOtherSession(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var blocked atomic.Bool
+	recorder := &telemetryReentryCallback{
+		onRetrieveStart: func(_ *Agent, _ *Session) {
+			if !blocked.CompareAndSwap(false, true) {
+				return
+			}
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-release
+		},
+	}
+	store := &fakeStore{
+		searchHits: []storage.SearchHit{
+			{
+				Chunk: storage.ChunkRecord{
+					ChunkID:    "doc:0",
+					SourcePath: "/tmp/doc.md",
+					Title:      "doc",
+					Text:       "evidence text",
+				},
+				Score: 0.99,
+			},
+		},
+	}
+	a := &Agent{
+		cfg: Config{
+			TopK:                5,
+			SimilarityThreshold: 0.5,
+			ChatModel:           "chat-test",
+			MaxHistoryRounds:    8,
+		},
+		store:      store,
+		embedder:   &fakeEmbedder{defaultVec: []float32{1, 2, 3}},
+		runner:     &fakeStreamingRunner{askFn: func(_ context.Context, _ graph.Request) (string, error) { return "ok", nil }},
+		sessions:   make(map[string]*Session),
+		dispatcher: telemetry.NewDispatcher([]telemetry.Callback{recorder}),
+	}
+	s1 := a.GetSession("telemetry-a")
+	s2 := a.GetSession("telemetry-b")
+	recorder.agent = a
+	recorder.session = s1
+
+	doneA := make(chan error, 1)
+	go func() {
+		_, err := s1.Ask(context.Background(), "what is this?")
+		doneA <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first telemetry callback did not start")
+	}
+
+	doneB := make(chan error, 1)
+	go func() {
+		_, err := s2.Ask(context.Background(), "other session")
+		doneB <- err
+	}()
+
+	select {
+	case err := <-doneB:
+		if err != nil {
+			t.Fatalf("session B Ask() error = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session B Ask() was blocked by session A telemetry callback")
+	}
+
+	close(release)
+	select {
+	case err := <-doneA:
+		if err != nil {
+			t.Fatalf("session A Ask() error = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session A Ask() did not finish after releasing telemetry callback")
+	}
+}
+
 type telemetryReentryCallback struct {
 	agent           *Agent
 	session         *Session

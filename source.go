@@ -59,9 +59,12 @@ func (s dirSource) Resolve(ctx context.Context) ([]KnowledgeFile, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(s.path)
+	info, err := os.Lstat(s.path)
 	if err != nil {
 		return nil, fmt.Errorf("stat source dir %q: %w", s.path, err)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return nil, fmt.Errorf("dir source must not be a symlink %q: %w", s.path, ErrUnsupportedSource)
 	}
 	if !info.IsDir() {
 		return nil, fmt.Errorf("dir source is not a directory %q: %w", s.path, ErrUnsupportedSource)

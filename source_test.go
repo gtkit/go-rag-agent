@@ -70,6 +70,23 @@ func TestFileAndDirSourceResolve(t *testing.T) {
 			wantErr: ErrUnsupportedSource,
 		},
 		{
+			name: "DirSource on symlinked directory returns error",
+			prepare: func(t *testing.T) (KnowledgeSource, string) {
+				t.Helper()
+				root := t.TempDir()
+				targetDir := filepath.Join(root, "real")
+				if err := os.MkdirAll(targetDir, 0o755); err != nil {
+					t.Fatalf("MkdirAll(%q): %v", targetDir, err)
+				}
+				linkDir := filepath.Join(root, "link")
+				if err := os.Symlink(targetDir, linkDir); err != nil {
+					t.Fatalf("Symlink(%q, %q): %v", targetDir, linkDir, err)
+				}
+				return DirSource(linkDir), root
+			},
+			wantErr: ErrUnsupportedSource,
+		},
+		{
 			name: "FileSource on unsupported extension returns error",
 			prepare: func(t *testing.T) (KnowledgeSource, string) {
 				t.Helper()
