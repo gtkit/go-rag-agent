@@ -5,7 +5,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/jung-kurt/gofpdf"
 )
 
 func TestLoadFile(t *testing.T) {
@@ -87,6 +90,28 @@ func TestLoadFile(t *testing.T) {
 			},
 		},
 		{
+			name: "pdf text extraction success",
+			prepare: func(t *testing.T) (context.Context, string, string, map[string]string) {
+				t.Helper()
+				root := t.TempDir()
+				path := filepath.Join(root, "knowledge.pdf")
+				writeTestPDF(t, path, []string{"Hello PDF", "Second line"})
+				return context.Background(), path, "Knowledge PDF", map[string]string{"lang": "en"}
+			},
+			assertion: func(t *testing.T, doc Document, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("LoadFile() error = %v", err)
+				}
+				if !strings.Contains(doc.Content, "Hello PDF") {
+					t.Fatalf("LoadFile() content = %q, want to contain %q", doc.Content, "Hello PDF")
+				}
+				if !strings.Contains(doc.Content, "Second line") {
+					t.Fatalf("LoadFile() content = %q, want to contain %q", doc.Content, "Second line")
+				}
+			},
+		},
+		{
 			name: "canceled context before read",
 			prepare: func(t *testing.T) (context.Context, string, string, map[string]string) {
 				t.Helper()
@@ -117,5 +142,19 @@ func TestLoadFile(t *testing.T) {
 			doc, err := LoadFile(ctx, path, title, metadata)
 			tc.assertion(t, doc, err)
 		})
+	}
+}
+
+func writeTestPDF(t *testing.T, path string, lines []string) {
+	t.Helper()
+
+	p := gofpdf.New("P", "mm", "A4", "")
+	p.AddPage()
+	p.SetFont("Arial", "", 12)
+	for _, line := range lines {
+		p.CellFormat(0, 10, line, "", 1, "", false, 0, "")
+	}
+	if err := p.OutputFileAndClose(path); err != nil {
+		t.Fatalf("OutputFileAndClose(%q): %v", path, err)
 	}
 }

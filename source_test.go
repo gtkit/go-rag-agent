@@ -44,17 +44,32 @@ func TestFileAndDirSourceResolve(t *testing.T) {
 			},
 		},
 		{
-			name: "DirSource recursively picks up .txt and .md files and returns deterministic order",
+			name: "FileSource on a .pdf file returns 1 file",
+			prepare: func(t *testing.T) (KnowledgeSource, string) {
+				t.Helper()
+				root := t.TempDir()
+				path := filepath.Join(root, "paper.pdf")
+				writeTestFile(t, path, "pdf-bytes-placeholder")
+				return FileSource(path), root
+			},
+			wantFiles: []KnowledgeFile{
+				{Path: "paper.pdf", Title: "paper"},
+			},
+		},
+		{
+			name: "DirSource recursively picks up .txt .md and .pdf files and returns deterministic order",
 			prepare: func(t *testing.T) (KnowledgeSource, string) {
 				t.Helper()
 				root := t.TempDir()
 				writeTestFile(t, filepath.Join(root, "z.md"), "z")
+				writeTestFile(t, filepath.Join(root, "nested", "b.pdf"), "pdf")
 				writeTestFile(t, filepath.Join(root, "nested", "a.txt"), "a")
 				writeTestFile(t, filepath.Join(root, "skip.log"), "c")
 				return DirSource(root), root
 			},
 			wantFiles: []KnowledgeFile{
 				{Path: filepath.Join("nested", "a.txt"), Title: "a"},
+				{Path: filepath.Join("nested", "b.pdf"), Title: "b"},
 				{Path: "z.md", Title: "z"},
 			},
 		},
@@ -91,7 +106,7 @@ func TestFileAndDirSourceResolve(t *testing.T) {
 			prepare: func(t *testing.T) (KnowledgeSource, string) {
 				t.Helper()
 				root := t.TempDir()
-				path := filepath.Join(root, "bad.pdf")
+				path := filepath.Join(root, "bad.docx")
 				writeTestFile(t, path, "hello")
 				return FileSource(path), root
 			},

@@ -15,7 +15,7 @@ type fileSource struct {
 	path string
 }
 
-// FileSource returns a knowledge source that resolves exactly one file path.
+// FileSource returns a knowledge source that resolves exactly one local text or PDF file path.
 func FileSource(path string) KnowledgeSource {
 	return fileSource{path: path}
 }
@@ -50,7 +50,7 @@ type dirSource struct {
 	path string
 }
 
-// DirSource returns a knowledge source that recursively resolves files in a directory.
+// DirSource returns a knowledge source that recursively resolves supported local text/PDF files in a directory.
 func DirSource(path string) KnowledgeSource {
 	return dirSource{path: path}
 }
@@ -111,7 +111,7 @@ func (s dirSource) Resolve(ctx context.Context) ([]KnowledgeFile, error) {
 
 func isSupportedKnowledgePath(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".txt", ".md":
+	case ".txt", ".md", ".pdf":
 		return true
 	default:
 		return false

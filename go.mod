@@ -8,6 +8,8 @@ require (
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.12
 	github.com/gtkit/json v0.2.10
 	github.com/gtkit/logger v1.6.2
+	github.com/jung-kurt/gofpdf v1.16.2
+	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/philippgille/chromem-go v0.7.0
 )
 

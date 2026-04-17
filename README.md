@@ -100,8 +100,9 @@ Validation notes:
 
 ## Ingestion Workflow
 
-1. Provide a source via `FileSource(path)` or `DirSource(path)` (`.txt` and `.md` only).
+1. Provide a source via `FileSource(path)` or `DirSource(path)` (`.txt`, `.md`, and text-based `.pdf`).
 2. `AddKnowledge` resolves files and loads content into RAG documents.
+   Plain text PDFs are supported; scanned-image PDFs and OCR are not part of phase 1.
 3. Content is chunked by rune window (`ChunkSize`, `ChunkOverlap`).
 4. Chunks are embedded through the configured embedding adapter.
 5. Records are upserted into local chromem storage.
