@@ -5,14 +5,17 @@ import (
 	"fmt"
 	"strings"
 
-	einotool "github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/schema"
-	gtjson "github.com/gtkit/json"
-
 	"github.com/gtkit/go-rag-agent/internal/storage"
 )
 
 const retrievalToolName = "retrieve_context"
+
+// Tool 定义项目内统一工具契约。
+type Tool interface {
+	Name() string
+	Description() string
+	Run(ctx context.Context, input string) (string, error)
+}
 
 // Retriever 定义基于纯文本查询的检索接口。
 type Retriever interface {
@@ -24,10 +27,6 @@ type RetrievalTool struct {
 	retriever Retriever
 }
 
-type retrieveArgs struct {
-	Query string `json:"query"`
-}
-
 // NewRetrievalTool 创建检索工具。
 func NewRetrievalTool(retriever Retriever) *RetrievalTool {
 	return &RetrievalTool{
@@ -35,37 +34,26 @@ func NewRetrievalTool(retriever Retriever) *RetrievalTool {
 	}
 }
 
-// Info 返回模型调用工具所需的元信息。
-func (t *RetrievalTool) Info(context.Context) (*schema.ToolInfo, error) {
-	return &schema.ToolInfo{
-		Name: retrievalToolName,
-		Desc: "Retrieve relevant evidence chunks from local knowledge.",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"query": {
-				Type:     schema.String,
-				Desc:     "standalone query for evidence retrieval",
-				Required: true,
-			},
-		}),
-	}, nil
+func (t *RetrievalTool) Name() string {
+	return retrievalToolName
 }
 
-// InvokableRun 执行检索，并返回按行拼接的证据文本。
-func (t *RetrievalTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...einotool.Option) (string, error) {
+func (t *RetrievalTool) Description() string {
+	return "Retrieve relevant evidence chunks from local knowledge."
+}
+
+// Run 执行检索，并返回按行拼接的证据文本。
+func (t *RetrievalTool) Run(ctx context.Context, input string) (string, error) {
 	if t.retriever == nil {
 		return "", fmt.Errorf("retriever is required")
 	}
 
-	var args retrieveArgs
-	if err := gtjson.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
-		return "", fmt.Errorf("decode retrieval args: %w", err)
-	}
-	args.Query = strings.TrimSpace(args.Query)
-	if args.Query == "" {
+	query := strings.TrimSpace(input)
+	if query == "" {
 		return "", fmt.Errorf("query is required")
 	}
 
-	hits, err := t.retriever.Search(ctx, args.Query)
+	hits, err := t.retriever.Search(ctx, query)
 	if err != nil {
 		return "", fmt.Errorf("search retrieval hits: %w", err)
 	}

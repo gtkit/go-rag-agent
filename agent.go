@@ -10,8 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	einotool "github.com/cloudwego/eino/components/tool"
-
 	"github.com/gtkit/go-rag-agent/internal/graph"
 	"github.com/gtkit/go-rag-agent/internal/llm"
 	"github.com/gtkit/go-rag-agent/internal/memory"
@@ -270,14 +268,14 @@ func New(cfg Config) (*Agent, error) {
 	retrievalTool := tools.NewRetrievalTool(
 		newRootRetriever(store, embedder, cfg.TopK, float32(cfg.SimilarityThreshold), storage.SearchFilter{}, cfg.EnableHybridSearch, cfg.EnableRerank, retrievalOptions),
 	)
-	toolset := []einotool.BaseTool{retrievalTool}
+	toolset := []tools.Tool{retrievalTool}
 	if webSearcher := newWebSearcher(cfg); webSearcher != nil {
 		toolset = append(toolset, tools.NewWebSearchTool(webSearcher))
 	}
-	runner, err := graph.NewReactRunner(ctx, chatModel, cfg.MaxIterations, toolset...)
+	runner, err := graph.NewChatRunner(chatModel, toolset...)
 	if err != nil {
 		_ = store.Close()
-		return nil, fmt.Errorf("create react runner: %w", err)
+		return nil, fmt.Errorf("create chat runner: %w", err)
 	}
 
 	dirSync, err := newDirectorySyncState(cfg.DataDir)

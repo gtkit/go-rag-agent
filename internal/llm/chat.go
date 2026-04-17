@@ -1,16 +1,33 @@
 package llm
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/cloudwego/eino/components/model"
 )
 
-// ChatModel 表示支持工具调用的聊天模型。
-type ChatModel = model.ToolCallingChatModel
+// Role 表示聊天消息角色。
+type Role string
+
+const (
+	RoleSystem    Role = "system"
+	RoleUser      Role = "user"
+	RoleAssistant Role = "assistant"
+)
+
+// Message 表示聊天模型输入输出消息。
+type Message struct {
+	Role    Role
+	Content string
+}
+
+// ChatModel 表示当前项目使用的聊天模型抽象。
+type ChatModel interface {
+	Generate(ctx context.Context, input []Message) (Message, error)
+	Stream(ctx context.Context, input []Message, emit func(string) error) error
+}
 
 // ChatConfig 保存聊天模型适配器的构造配置。
 type ChatConfig struct {

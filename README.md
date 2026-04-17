@@ -91,7 +91,7 @@ func main() {
 - `TopK`（默认 `5`）
 - `ChunkSize`（默认 `1000`）
 - `MaxHistoryRounds`（默认 `8`）
-- `MaxIterations`（默认 `3`）
+- `MaxIterations`（默认 `3`，当前 LangChainGo PoC 分支里保留字段但未参与内部执行循环）
 - `RequestTimeout`（默认 `30s`）
 - `EnableHybridSearch`（默认 `false`）
 - `EnableRerank`（默认 `false`）
@@ -513,7 +513,7 @@ if err := agent.AddKnowledge(ctx, src); err != nil {
 
 ## 生成延迟设计
 
-- 模型 / 工具循环受 `MaxIterations` 约束。
+- 生成阶段优先复用本地检索证据；证据不足且启用联网搜索时，会补充公网搜索结果后再交给聊天模型。
 - 每个请求的外部调用受 `RequestTimeout` 控制。
 - Session 历史是有界的（`MaxHistoryRounds`），避免 prompt 无限膨胀。
 - 流式路径会尽早输出 `answer_chunk`，降低首字节等待感受。
@@ -522,6 +522,6 @@ if err := agent.AddKnowledge(ctx, src); err != nil {
 
 Phase 1 的公开 API 还没有开放自定义工具注册能力。
 
-当前的扩展点仍然在内部接线：`agent.go` 里会把 `tools.NewRetrievalTool(...)` 传给 `graph.NewReactRunner(...)`。
+当前的扩展点仍然在内部接线：`agent.go` 里会把 `tools.NewRetrievalTool(...)` 和可选的 `tools.NewWebSearchTool(...)` 传给 `graph.NewChatRunner(...)`。
 
 如果你现在就要加自定义工具，建议在内部 fork / 自定义接线层里扩展，并保持 retrieval tool 的兼容性。

@@ -3,28 +3,35 @@ package llm
 import (
 	"context"
 	"fmt"
+	"net/http"
 
-	openaiembed "github.com/cloudwego/eino-ext/components/embedding/openai"
+	lcembeddings "github.com/tmc/langchaingo/embeddings"
+	lcopenai "github.com/tmc/langchaingo/llms/openai"
 )
 
-// OpenAIEmbedder 将 Eino 的 OpenAI Embedder 适配到当前包的 Embedder 接口。
+// OpenAIEmbedder 将 LangChainGo OpenAI Embedder 适配到当前包的 Embedder 接口。
 type OpenAIEmbedder struct {
-	client *openaiembed.Embedder
+	client *lcembeddings.EmbedderImpl
 }
 
 // NewOpenAIEmbedder 创建一个 OpenAI-compatible embedding 适配器。
-func NewOpenAIEmbedder(ctx context.Context, cfg EmbeddingConfig) (Embedder, error) {
+func NewOpenAIEmbedder(_ context.Context, cfg EmbeddingConfig) (Embedder, error) {
 	cfg = cfg.normalized()
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate embedding config: %w", err)
 	}
 
-	client, err := openaiembed.NewEmbedder(ctx, &openaiembed.EmbeddingConfig{
-		Model:   cfg.Model,
-		BaseURL: cfg.BaseURL,
-		APIKey:  cfg.APIKey,
-		Timeout: cfg.Timeout,
-	})
+	openaiClient, err := lcopenai.New(
+		lcopenai.WithBaseURL(cfg.BaseURL),
+		lcopenai.WithToken(cfg.APIKey),
+		lcopenai.WithEmbeddingModel(cfg.Model),
+		lcopenai.WithHTTPClient(&http.Client{Timeout: cfg.Timeout}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("new openai embedding client: %w", err)
+	}
+
+	client, err := lcembeddings.NewEmbedder(openaiClient)
 	if err != nil {
 		return nil, fmt.Errorf("new openai embedder: %w", err)
 	}
@@ -32,7 +39,7 @@ func NewOpenAIEmbedder(ctx context.Context, cfg EmbeddingConfig) (Embedder, erro
 	return &OpenAIEmbedder{client: client}, nil
 }
 
-// EmbedTexts 对文本做向量化，并把结果转换为 float32 向量。
+// EmbedTexts 对文本做向量化，并返回 float32 向量。
 func (e *OpenAIEmbedder) EmbedTexts(ctx context.Context, texts []string) ([][]float32, error) {
 	normalizedTexts, err := normalizeEmbeddingTexts(texts)
 	if err != nil {
@@ -43,11 +50,11 @@ func (e *OpenAIEmbedder) EmbedTexts(ctx context.Context, texts []string) ([][]fl
 		return nil, fmt.Errorf("openai embedder is nil")
 	}
 
-	rows, err := e.client.EmbedStrings(ctx, normalizedTexts)
+	rows, err := e.client.EmbedDocuments(ctx, normalizedTexts)
 	if err != nil {
 		return nil, fmt.Errorf("embed texts: %w", err)
 	}
-	return convertEmbeddingRows(rows), nil
+	return rows, nil
 }
 
 func convertEmbeddingRows(rows [][]float64) [][]float32 {
