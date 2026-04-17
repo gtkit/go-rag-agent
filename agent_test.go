@@ -691,6 +691,51 @@ func TestAddKnowledgeIngestsAndUpsertsChunks(t *testing.T) {
 	}
 }
 
+func TestAddKnowledgePropagatesBuiltinMetadata(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	path := filepath.Join(root, "knowledge.md")
+	writeTestFile(t, path, "---\ntag: api\nlang: en\n---\nhello world")
+	writeTestFile(t, filepath.Join(root, "knowledge.meta.json"), `{"lang":"zh","team":"search"}`)
+
+	store := &fakeStore{}
+	embedder := &fakeEmbedder{defaultVec: []float32{1, 2, 3}}
+	a := &Agent{
+		cfg:      Config{},
+		store:    store,
+		embedder: embedder,
+		chunker:  mustNewChunkerForTest(t, 64, 0),
+		sessions: make(map[string]*Session),
+	}
+
+	if err := a.AddKnowledge(t.Context(), FileSource(path)); err != nil {
+		t.Fatalf("AddKnowledge() error = %v", err)
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.upsertBatches) != 1 {
+		t.Fatalf("upsert call count = %d, want 1", len(store.upsertBatches))
+	}
+	if len(store.upsertBatches[0]) != 1 {
+		t.Fatalf("upsert batch len = %d, want 1", len(store.upsertBatches[0]))
+	}
+
+	record := store.upsertBatches[0][0]
+	wantMetadata := map[string]string{
+		"tag":  "api",
+		"lang": "zh",
+		"team": "search",
+	}
+	if !maps.Equal(record.Metadata, wantMetadata) {
+		t.Fatalf("record metadata = %v, want %v", record.Metadata, wantMetadata)
+	}
+	if strings.Contains(record.Text, "tag: api") || strings.HasPrefix(record.Text, "---") {
+		t.Fatalf("record text = %q, want stripped body content", record.Text)
+	}
+}
+
 func TestAddKnowledgeRejectsNilSource(t *testing.T) {
 	t.Parallel()
 

@@ -7,6 +7,5 @@ import (
 	_ "github.com/cloudwego/eino-ext/components/embedding/openai"
 	_ "github.com/cloudwego/eino-ext/components/model/openai"
 	_ "github.com/gtkit/json"
-	_ "github.com/gtkit/logger"
 	_ "github.com/philippgille/chromem-go"
 )

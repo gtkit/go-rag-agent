@@ -127,6 +127,9 @@ func main() {
 - 文本型 PDF 会优先直接抽取文本。
 - 当 PDF 无法直接抽取可用文本时，如果配置了 `PDFOCRBridge`，会自动走 OCR fallback。
 - 如果扫描版 PDF 没有配置 `PDFOCRBridge`，导入会返回明确错误，不会静默导入空内容。
+- Markdown 支持 YAML front matter，导入时会自动提取为 metadata，并从正文中剥离该 front matter。
+- 所有支持的知识文件都支持 sidecar metadata，命名规则是 `<basename>.meta.json|yaml|yml`。
+- 如果同一个 Markdown 同时存在 front matter 和 sidecar metadata，sidecar 的同名字段会覆盖 front matter。
 
 ## 扫描版 PDF / OCR
 
@@ -215,6 +218,59 @@ err := agent.GetSession("me").AskStreamWithOptions(ctx, "总结网关接口规�
 - `Metadata` 只支持精确匹配，不支持模糊匹配和范围查询。
 - `SourcePrefixes` 适合目录级限制；如果你要精确锁定单个文件，请优先用 `SourcePaths`。
 - 如果过滤后没有可用证据，接口会返回证据不足错误，不会回退到全库检索。
+
+## 内置元数据提取
+
+当前内置 metadata 来源有两类：
+
+1. Markdown YAML front matter
+2. sidecar metadata 文件
+
+Markdown 示例：
+
+```md
+---
+tag: api
+lang: zh
+project: rag
+---
+
+# Gateway API
+
+这里是正文内容。
+```
+
+这段 front matter 会被自动提取为 metadata，正文分块里不会再保留这段 YAML。
+
+sidecar metadata 示例：
+
+`gateway.md`
+
+```md
+# Gateway API
+
+这里是正文内容。
+```
+
+`gateway.meta.json`
+
+```json
+{
+  "team": "search",
+  "lang": "en"
+}
+```
+
+导入后最终 metadata 会合并为：
+- front matter 提供的字段
+- sidecar 提供的字段
+
+同名字段以 sidecar 为准。上面这个例子里，如果 `gateway.md` front matter 里也写了 `lang: zh`，最终会以 `gateway.meta.json` 里的 `lang: en` 为准。
+
+限制：
+- 当前只支持顶层 metadata 对象。
+- metadata 最终会进入 `map[string]string`；复合值会被字符串化。
+- `DirSource(path)` 会自动跳过 sidecar 文件本身，不会把它们当正文文档导入。
 
 ## 有道笔记桥接导入
 

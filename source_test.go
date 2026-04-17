@@ -2,6 +2,7 @@ package ragagent
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +16,7 @@ func TestFileAndDirSourceResolve(t *testing.T) {
 		name       string
 		prepare    func(t *testing.T) (KnowledgeSource, string)
 		wantFiles  []KnowledgeFile
+		wantMetas  []map[string]string
 		wantErr    error
 		wantAnyErr bool
 	}{
@@ -58,6 +60,23 @@ func TestFileAndDirSourceResolve(t *testing.T) {
 			},
 		},
 		{
+			name: "FileSource loads sidecar metadata",
+			prepare: func(t *testing.T) (KnowledgeSource, string) {
+				t.Helper()
+				root := t.TempDir()
+				path := filepath.Join(root, "note.md")
+				writeTestFile(t, path, "hello")
+				writeTestFile(t, filepath.Join(root, "note.meta.json"), `{"tag":"api","lang":"en"}`)
+				return FileSource(path), root
+			},
+			wantFiles: []KnowledgeFile{
+				{Path: "note.md", Title: "note"},
+			},
+			wantMetas: []map[string]string{
+				{"tag": "api", "lang": "en"},
+			},
+		},
+		{
 			name: "DirSource recursively picks up .txt .md and .pdf files and returns deterministic order",
 			prepare: func(t *testing.T) (KnowledgeSource, string) {
 				t.Helper()
@@ -72,6 +91,27 @@ func TestFileAndDirSourceResolve(t *testing.T) {
 				{Path: filepath.Join("nested", "a.txt"), Title: "a"},
 				{Path: filepath.Join("nested", "b.pdf"), Title: "b"},
 				{Path: "z.md", Title: "z"},
+			},
+		},
+		{
+			name: "DirSource skips sidecar files and attaches sidecar metadata",
+			prepare: func(t *testing.T) (KnowledgeSource, string) {
+				t.Helper()
+				root := t.TempDir()
+				writeTestFile(t, filepath.Join(root, "docs", "a.md"), "hello")
+				writeTestFile(t, filepath.Join(root, "docs", "a.meta.yaml"), "tag: api\nlang: zh\n")
+				writeTestFile(t, filepath.Join(root, "docs", "a.meta.json"), `{"ignored":"because yaml wins by priority order"}`)
+				writeTestFile(t, filepath.Join(root, "docs", "b.txt"), "world")
+				writeTestFile(t, filepath.Join(root, "docs", "b.meta.json"), `{"team":"search"}`)
+				return DirSource(filepath.Join(root, "docs")), filepath.Join(root, "docs")
+			},
+			wantFiles: []KnowledgeFile{
+				{Path: "a.md", Title: "a"},
+				{Path: "b.txt", Title: "b"},
+			},
+			wantMetas: []map[string]string{
+				{"tag": "api", "lang": "zh"},
+				{"team": "search"},
 			},
 		},
 		{
@@ -239,6 +279,17 @@ func TestFileAndDirSourceResolve(t *testing.T) {
 			}
 			if !slices.Equal(gotTitles, wantTitles) {
 				t.Fatalf("Resolve() titles = %v, want %v", gotTitles, wantTitles)
+			}
+			if len(tc.wantMetas) > 0 {
+				gotMetas := make([]map[string]string, 0, len(files))
+				for _, file := range files {
+					gotMetas = append(gotMetas, file.Metadata)
+				}
+				for i := range tc.wantMetas {
+					if !maps.Equal(gotMetas[i], tc.wantMetas[i]) {
+						t.Fatalf("Resolve() metadata[%d] = %v, want %v", i, gotMetas[i], tc.wantMetas[i])
+					}
+				}
 			}
 		})
 	}

@@ -42,6 +42,18 @@
 - **WHEN** 调用方导入一个已经可以直接提取可用文本的本地 PDF，且同时配置了 OCR bridge
 - **THEN** 库 MUST 优先使用直接文本提取结果，而不是无条件执行 OCR
 
+#### Scenario: Markdown front matter 自动进入 metadata
+- **WHEN** 调用方导入一个包含 YAML front matter 的 Markdown 文件
+- **THEN** 库 MUST 把 front matter 提取为文档 metadata，并且 MUST 不把该 front matter 保留在正文分块文本中
+
+#### Scenario: sidecar metadata 自动进入 metadata
+- **WHEN** 调用方导入一个存在 sidecar metadata 文件的本地知识文件
+- **THEN** 库 MUST 自动加载该 sidecar metadata，并把它合并进文档 metadata
+
+#### Scenario: sidecar metadata 覆盖 front matter
+- **WHEN** 一个 Markdown 文件同时存在 front matter metadata 和 sidecar metadata，且两者包含同名字段
+- **THEN** 库 MUST 以 sidecar metadata 的值为最终导入结果
+
 #### Scenario: 同一 store 上的并发 upsert 被串行化
 - **WHEN** 两个知识导入操作并发命中同一个 store
 - **THEN** 该 store MUST 一次只执行一个 upsert，使 chunk 替换和 stale cleanup 不会交错成混合状态

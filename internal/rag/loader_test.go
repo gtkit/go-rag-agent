@@ -3,6 +3,7 @@ package rag
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,6 +109,36 @@ func TestLoadFile(t *testing.T) {
 				}
 				if !strings.Contains(doc.Content, "Second line") {
 					t.Fatalf("LoadFile() content = %q, want to contain %q", doc.Content, "Second line")
+				}
+			},
+		},
+		{
+			name: "markdown front matter is extracted into metadata and removed from content",
+			prepare: func(t *testing.T) (context.Context, string, string, map[string]string) {
+				t.Helper()
+				root := t.TempDir()
+				path := filepath.Join(root, "knowledge.md")
+				writeTestFile(t, path, "---\ntag: api\nlang: en\n---\n# Title\n\nhello world\n")
+				return context.Background(), path, "Knowledge", map[string]string{"source": "sidecar"}
+			},
+			assertion: func(t *testing.T, doc Document, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("LoadFile() error = %v", err)
+				}
+				wantMetadata := map[string]string{
+					"tag":    "api",
+					"lang":   "en",
+					"source": "sidecar",
+				}
+				if !maps.Equal(doc.Metadata, wantMetadata) {
+					t.Fatalf("LoadFile() metadata = %v, want %v", doc.Metadata, wantMetadata)
+				}
+				if strings.Contains(doc.Content, "tag: api") || strings.HasPrefix(doc.Content, "---") {
+					t.Fatalf("LoadFile() content = %q, want front matter stripped", doc.Content)
+				}
+				if !strings.Contains(doc.Content, "hello world") {
+					t.Fatalf("LoadFile() content = %q, want body text", doc.Content)
 				}
 			},
 		},
@@ -258,5 +289,16 @@ func writeBlankPDF(t *testing.T, path string) {
 	p.AddPage()
 	if err := p.OutputFileAndClose(path); err != nil {
 		t.Fatalf("OutputFileAndClose(%q): %v", path, err)
+	}
+}
+
+func writeTestFile(t *testing.T, path string, content string) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", path, err)
 	}
 }

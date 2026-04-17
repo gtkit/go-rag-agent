@@ -39,11 +39,15 @@ func (s fileSource) Resolve(ctx context.Context) ([]KnowledgeFile, error) {
 	if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("file source must be a regular file %q: %w", s.path, ErrUnsupportedSource)
 	}
+	metadata, err := loadSidecarMetadataForSource(s.path)
+	if err != nil {
+		return nil, err
+	}
 	return []KnowledgeFile{
 		{
 			Path:     s.path,
 			Title:    titleFromPath(s.path),
-			Metadata: map[string]string{},
+			Metadata: metadata,
 		},
 	}, nil
 }
@@ -109,13 +113,20 @@ func (s dirSource) Resolve(ctx context.Context) ([]KnowledgeFile, error) {
 		if !d.Type().IsRegular() {
 			return nil
 		}
+		if isMetadataSidecarPath(path) {
+			return nil
+		}
 		if !isSupportedKnowledgePath(path) {
 			return nil
+		}
+		metadata, err := loadSidecarMetadataForSource(path)
+		if err != nil {
+			return err
 		}
 		files = append(files, KnowledgeFile{
 			Path:     path,
 			Title:    titleFromPath(path),
-			Metadata: map[string]string{},
+			Metadata: metadata,
 		})
 		return nil
 	})

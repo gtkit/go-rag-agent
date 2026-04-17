@@ -2,6 +2,7 @@ package rag
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -37,7 +38,7 @@ func LoadFile(ctx context.Context, path string, title string, metadata map[strin
 		return Document{}, fmt.Errorf("normalize path %q: %w", path, err)
 	}
 
-	content, err := readDocumentContent(ctx, path, opts)
+	content, extractedMetadata, err := readDocumentContent(ctx, path, opts)
 	if err != nil {
 		return Document{}, fmt.Errorf("read file %q: %w", path, err)
 	}
@@ -46,18 +47,35 @@ func LoadFile(ctx context.Context, path string, title string, metadata map[strin
 		ID:         stableID,
 		SourcePath: path,
 		Title:      title,
-		Metadata:   cloneMetadata(metadata),
+		Metadata:   mergeMetadata(extractedMetadata, metadata),
 		Content:    string(content),
 	}, nil
 }
 
-func readDocumentContent(ctx context.Context, path string, opts LoadOptions) ([]byte, error) {
+func readDocumentContent(ctx context.Context, path string, opts LoadOptions) ([]byte, map[string]string, error) {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".pdf":
-		return readPDFDocumentContent(ctx, path, opts)
+		content, err := readPDFDocumentContent(ctx, path, opts)
+		return content, map[string]string{}, err
+	case ".md":
+		content, metadata, err := readMarkdownDocumentContent(path)
+		return content, metadata, err
 	default:
-		return os.ReadFile(path)
+		content, err := os.ReadFile(path)
+		return content, map[string]string{}, err
 	}
+}
+
+func readMarkdownDocumentContent(path string) ([]byte, map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	body, metadata, err := extractMarkdownFrontMatter(string(data))
+	if err != nil {
+		return nil, nil, err
+	}
+	return []byte(body), metadata, nil
 }
 
 func readPDFDocumentContent(ctx context.Context, path string, opts LoadOptions) ([]byte, error) {
@@ -130,4 +148,63 @@ func cloneMetadata(input map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func mergeMetadata(base map[string]string, override map[string]string) map[string]string {
+	if len(base) == 0 && len(override) == 0 {
+		return map[string]string{}
+	}
+
+	out := make(map[string]string, len(base)+len(override))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range override {
+		out[k] = v
+	}
+	return out
+}
+
+func stringifyMetadataMap(raw map[string]any) (map[string]string, error) {
+	if len(raw) == 0 {
+		return map[string]string{}, nil
+	}
+
+	out := make(map[string]string, len(raw))
+	for key, value := range raw {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		text, err := stringifyMetadataValue(value)
+		if err != nil {
+			return nil, fmt.Errorf("stringify metadata key %q: %w", key, err)
+		}
+		out[key] = text
+	}
+	return out, nil
+}
+
+func stringifyMetadataValue(value any) (string, error) {
+	switch v := value.(type) {
+	case nil:
+		return "", nil
+	case string:
+		return v, nil
+	case bool:
+		if v {
+			return "true", nil
+		}
+		return "false", nil
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		return fmt.Sprint(v), nil
+	default:
+		data, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
 }
