@@ -1,57 +1,76 @@
-## Purpose
+## 目的
 
-Define the library-first RAG runtime API for embedded use in Go applications.
+定义一个可嵌入 Go 应用的库优先 RAG 运行时 API。
 
-## Requirements
+## 要求
 
-### Requirement: Library-first agent construction
-The system SHALL provide a small root-package API that allows Go applications to construct an agent, obtain sessions, ingest knowledge sources, ask synchronous questions, stream answers, and release resources without running a standalone HTTP service.
+### Requirement: 库优先的 Agent 构造
+系统 SHALL 提供一个精简的根包 API，使 Go 应用可以构造 Agent、获取 Session、导入知识源、执行同步问答、执行流式问答，并在不启动独立 HTTP 服务的前提下释放资源。
 
-#### Scenario: Create agent with valid Phase 1 config
-- **WHEN** a caller constructs an agent with valid chat model, embedding model, and timeout configuration
-- **THEN** the library creates an `Agent` instance ready to ingest knowledge and serve sessions
+#### Scenario: 使用有效的 Phase 1 配置创建 Agent
+- **WHEN** 调用方使用有效的聊天模型、embedding 模型和超时配置构造 Agent
+- **THEN** 库会创建一个可用于知识导入和会话服务的 `Agent` 实例
 
-#### Scenario: Reject unsupported Phase 2 flags during Phase 1
-- **WHEN** a caller enables Phase 2-only behavior such as hybrid retrieval or reranking in Phase 1 configuration
-- **THEN** the library MUST reject construction with an invalid configuration error
+#### Scenario: 在 Phase 1 拒绝 Phase 2 能力开关
+- **WHEN** 调用方在 Phase 1 配置中启用 hybrid retrieval 或 rerank 等 Phase 2 功能
+- **THEN** 库 MUST 以无效配置错误拒绝构造
 
-### Requirement: Local knowledge ingestion
-The system SHALL ingest `.txt`, `.md`, and `.pdf` knowledge sources from local files and directories, split them into deterministic chunks, generate embeddings, and persist chunk content plus citation metadata into embedded storage.
+### Requirement: 本地知识导入
+系统 SHALL 支持从本地文件和目录中导入 `.txt`、`.md` 与 `.pdf` 知识源，对其做确定性分块、生成 embedding，并把 chunk 文本及引用元数据写入嵌入式存储。
 
-#### Scenario: Ingest supported file and directory sources
-- **WHEN** a caller passes a supported local file or directory source to `AddKnowledge`
-- **THEN** the library loads each `.txt`, `.md`, and `.pdf` file, chunks its content, embeds the chunks, and stores them with source path, title, chunk ID, and offset metadata
+#### Scenario: 导入支持的文件和目录来源
+- **WHEN** 调用方把受支持的本地文件或目录来源传给 `AddKnowledge`
+- **THEN** 库会加载其中每个 `.txt`、`.md` 与 `.pdf` 文件，进行分块、向量化，并按 source path、title、chunk ID 和 offset 元数据写入存储
 
-#### Scenario: Reject unsupported knowledge source types
-- **WHEN** a caller passes a source that is not `.txt`, `.md`, or `.pdf`
-- **THEN** the library MUST return an unsupported-source error
+#### Scenario: 拒绝不受支持的知识源类型
+- **WHEN** 调用方传入的来源不是 `.txt`、`.md` 或 `.pdf`
+- **THEN** 库 MUST 返回 unsupported-source 错误
 
-#### Scenario: Load text from a local PDF
-- **WHEN** a caller ingests a supported local PDF file containing textual page content
-- **THEN** the library MUST extract the page text and pass that text through the normal chunking and embedding pipeline
+#### Scenario: 从本地 PDF 中抽取文本
+- **WHEN** 调用方导入一个包含可提取文本内容的本地 PDF 文件
+- **THEN** 库 MUST 抽取其中的文本，并将该文本送入常规的分块与 embedding 流程
 
-### Requirement: Retrieval-backed synchronous answers
-The system SHALL answer synchronous queries using retrieved evidence from embedded storage and SHALL return citations associated with the selected evidence.
+#### Scenario: 同一 store 上的并发 upsert 被串行化
+- **WHEN** 两个知识导入操作并发命中同一个 store
+- **THEN** 该 store MUST 一次只执行一个 upsert，使 chunk 替换和 stale cleanup 不会交错成混合状态
 
-#### Scenario: Return answer with citations
-- **WHEN** a session asks a question after relevant knowledge has been ingested
-- **THEN** the library retrieves bounded evidence, generates an answer, and returns both answer text and citations for the supporting chunks
+### Requirement: 基于检索的同步问答
+系统 SHALL 基于嵌入式存储中的检索证据回答同步查询，并 SHALL 返回与所选证据对应的引用信息。
 
-#### Scenario: Report insufficient evidence conservatively
-- **WHEN** the retrieved evidence is empty or too weak to assemble usable context
-- **THEN** the library MUST return an insufficient-evidence or context-assembly error rather than silently fabricating support
+#### Scenario: 返回带引用的答案
+- **WHEN** Session 在已有相关知识导入的前提下发起问题
+- **THEN** 库会检索受限证据，生成答案，并同时返回答案文本和支撑该答案的引用
 
-### Requirement: Callback-based streaming answers
-The system SHALL provide a callback-based streaming API that emits retrieval and tool lifecycle events, answer chunks, citations, error events, and a terminal done event.
+#### Scenario: 在证据不足时保守返回
+- **WHEN** 检索到的证据为空，或不足以拼装出可用上下文
+- **THEN** 库 MUST 返回证据不足或上下文拼装错误，而不是静默编造答案
 
-#### Scenario: Stream answer chunks and completion
-- **WHEN** a session calls `AskStream` for a query that completes successfully
-- **THEN** the library emits zero or more answer chunk events followed by a done event
+### Requirement: 基于回调的流式答案
+系统 SHALL 提供基于回调的流式 API，发出检索/工具生命周期事件、答案分块、引用事件、错误事件，以及最终的完成事件。
 
-#### Scenario: Surface citations during streaming
-- **WHEN** relevant evidence is selected for a streaming answer
-- **THEN** the library emits citation events associated with the supporting chunks before or during answer streaming
+#### Scenario: 成功流式输出答案分块和完成事件
+- **WHEN** Session 调用 `AskStream` 且查询成功完成
+- **THEN** 库会发出零个或多个答案分块事件，并最终发出 `done` 事件
 
-#### Scenario: Emitter panic is converted to error
-- **WHEN** the caller’s streaming emitter panics while the library is emitting stream events
-- **THEN** the library MUST recover the panic, return an ordinary error to the caller, and still finalize session execution state
+#### Scenario: 在流式过程中输出引用
+- **WHEN** 为流式答案选中了相关证据
+- **THEN** 库 MUST 在流式过程中或之前发出与支撑 chunk 对应的引用事件
+
+#### Scenario: emitter panic 被转换为普通错误
+- **WHEN** 调用方的 streaming emitter 在库发出流式事件时发生 panic
+- **THEN** 库 MUST 恢复该 panic，将其转成普通错误返回，并仍然完成 Session 的最终清理
+
+### Requirement: 有道笔记桥接导入
+系统 SHALL 提供一个知识源，通过本地安装的有道笔记 CLI 桥接命令把笔记导出到临时目录，再按常规本地文件导入流程完成导入。
+
+#### Scenario: 通过本地桥接成功导出并导入笔记
+- **WHEN** 调用方配置了有道笔记桥接知识源，且本地 `youdaonote` 命令成功把笔记导出到指定临时目录
+- **THEN** 库 MUST 通过与 `DirSource` 相同的本地文件导入流程导入这些导出文件
+
+#### Scenario: 本地桥接命令缺失
+- **WHEN** 调用方使用有道笔记桥接知识源，但配置的 `youdaonote` 命令不存在
+- **THEN** 库 MUST 返回一个清晰的 unsupported-source 风格错误，并指出缺失的命令名
+
+#### Scenario: 桥接导出命令执行失败
+- **WHEN** 本地 `youdaonote` 导出命令执行失败并返回错误
+- **THEN** 库 MUST 把该失败作为导入错误返回，且 MUST NOT 静默继续执行空导入
