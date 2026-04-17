@@ -391,6 +391,93 @@ func TestSessionAskStreamSameSessionSerialization(t *testing.T) {
 	}
 }
 
+func TestSessionAskStreamQueuedRequestHonorsContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	block := make(chan struct{})
+	started := make(chan struct{}, 1)
+	runner := &fakeStreamingRunner{
+		askStreamFn: func(ctx context.Context, _ graph.Request, emit graph.StreamEmitter) error {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			select {
+			case <-block:
+				if err := emit(graph.Event{Type: graph.EventDone, Step: 1}); err != nil {
+					return err
+				}
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}
+	a := &Agent{
+		cfg: Config{
+			TopK:                5,
+			SimilarityThreshold: 0.5,
+			MaxHistoryRounds:    8,
+		},
+		store: &fakeStore{
+			searchHits: []storage.SearchHit{
+				{
+					Chunk: storage.ChunkRecord{
+						ChunkID:    "doc:0",
+						SourcePath: "/tmp/doc.md",
+						Title:      "doc",
+						Text:       "evidence text",
+					},
+					Score: 0.99,
+				},
+			},
+		},
+		embedder: &fakeEmbedder{defaultVec: []float32{1, 2, 3}},
+		runner:   runner,
+		sessions: make(map[string]*Session),
+	}
+	s := a.GetSession("queued-cancel")
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- s.AskStream(context.Background(), "first", func(StreamEvent) error { return nil })
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first AskStream did not start")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- s.AskStream(ctx, "second", func(StreamEvent) error { return nil })
+	}()
+
+	cancel()
+
+	select {
+	case err := <-secondDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("queued AskStream error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued AskStream did not honor context cancellation promptly")
+	}
+
+	close(block)
+
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("first AskStream error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first AskStream did not finish after unblock")
+	}
+}
+
 func TestSessionAskStreamCancellationNoLeak(t *testing.T) {
 	t.Parallel()
 

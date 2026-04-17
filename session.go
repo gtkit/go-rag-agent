@@ -15,7 +15,8 @@ import (
 type Session struct {
 	agent        *Agent
 	id           string
-	execMu       sync.Mutex
+	execOnce     sync.Once
+	execSlot     chan struct{}
 	mu           sync.Mutex
 	history      *memory.History
 	closed       bool
@@ -44,8 +45,10 @@ func (s *Session) Ask(ctx context.Context, query string) (Answer, error) {
 		s.beforeAskLock()
 	}
 
-	s.execMu.Lock()
-	defer s.execMu.Unlock()
+	if err := s.acquireExecutionSlot(ctx); err != nil {
+		return Answer{}, err
+	}
+	defer s.releaseExecutionSlot()
 	if err := s.beginExecution(); err != nil {
 		return Answer{}, err
 	}
@@ -72,8 +75,10 @@ func (s *Session) AskStream(ctx context.Context, query string, emit func(StreamE
 		s.beforeAskLock()
 	}
 
-	s.execMu.Lock()
-	defer s.execMu.Unlock()
+	if err := s.acquireExecutionSlot(ctx); err != nil {
+		return err
+	}
+	defer s.releaseExecutionSlot()
 	if err := s.beginExecution(); err != nil {
 		return err
 	}
@@ -123,6 +128,29 @@ func (s *Session) beginExecution() error {
 	}
 	s.executing = true
 	return nil
+}
+
+func (s *Session) acquireExecutionSlot(ctx context.Context) error {
+	slot := s.ensureExecutionSlot()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-slot:
+		return nil
+	}
+}
+
+func (s *Session) releaseExecutionSlot() {
+	slot := s.ensureExecutionSlot()
+	slot <- struct{}{}
+}
+
+func (s *Session) ensureExecutionSlot() chan struct{} {
+	s.execOnce.Do(func() {
+		s.execSlot = make(chan struct{}, 1)
+		s.execSlot <- struct{}{}
+	})
+	return s.execSlot
 }
 
 func (s *Session) isEmittingCallback() bool {
