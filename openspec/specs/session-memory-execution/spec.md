@@ -37,6 +37,11 @@ The system SHALL serialize state mutation for the same session while allowing di
 - **WHEN** requests target different session IDs
 - **THEN** the library MAY execute them concurrently without sharing mutable session state
 
+#### Scenario: Queued request is canceled before execution starts
+- **WHEN** one request is already executing for a session and a second request for the same session is queued behind it
+- **AND** the queued request’s context is canceled before it acquires the session execution slot
+- **THEN** the queued request MUST return promptly with the context cancellation error instead of waiting for the active request to finish
+
 ### Requirement: Cancellation-safe streaming execution
 The system SHALL stop downstream work promptly when a streaming request is canceled or when the callback returns an error, and SHALL release internal resources before returning.
 
