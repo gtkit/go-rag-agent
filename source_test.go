@@ -12,10 +12,11 @@ func TestFileAndDirSourceResolve(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		prepare   func(t *testing.T) (KnowledgeSource, string)
-		wantFiles []KnowledgeFile
-		wantErr   error
+		name       string
+		prepare    func(t *testing.T) (KnowledgeSource, string)
+		wantFiles  []KnowledgeFile
+		wantErr    error
+		wantAnyErr bool
 	}{
 		{
 			name: "FileSource on a .txt file returns 1 file",
@@ -144,6 +145,48 @@ func TestFileAndDirSourceResolve(t *testing.T) {
 				{Path: "z.md", Title: "z"},
 			},
 		},
+		{
+			name: "Youdao bridge export resolves supported files",
+			prepare: func(t *testing.T) (KnowledgeSource, string) {
+				t.Helper()
+				root := t.TempDir()
+				script := filepath.Join(root, "youdao-export.sh")
+				writeExecutableFile(t, script, "#!/bin/sh\nout=\"$1\"\nmkdir -p \"$out\"\nprintf '# note\\ncontent' > \"$out/note.md\"\n")
+				return YoudaoNoteSource(YoudaoNoteBridgeConfig{
+					Command: script,
+					Args:    []string{"{output}"},
+				}), root
+			},
+			wantFiles: []KnowledgeFile{
+				{Path: "note.md", Title: "note"},
+			},
+		},
+		{
+			name: "Youdao bridge missing command returns error",
+			prepare: func(t *testing.T) (KnowledgeSource, string) {
+				t.Helper()
+				root := t.TempDir()
+				return YoudaoNoteSource(YoudaoNoteBridgeConfig{
+					Command: "missing-youdaonote-command",
+					Args:    []string{"{output}"},
+				}), root
+			},
+			wantErr: ErrUnsupportedSource,
+		},
+		{
+			name: "Youdao bridge command failure returns error",
+			prepare: func(t *testing.T) (KnowledgeSource, string) {
+				t.Helper()
+				root := t.TempDir()
+				script := filepath.Join(root, "youdao-fail.sh")
+				writeExecutableFile(t, script, "#!/bin/sh\necho fail >&2\nexit 2\n")
+				return YoudaoNoteSource(YoudaoNoteBridgeConfig{
+					Command: script,
+					Args:    []string{"{output}"},
+				}), root
+			},
+			wantAnyErr: true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -159,6 +202,12 @@ func TestFileAndDirSourceResolve(t *testing.T) {
 				}
 				return
 			}
+			if tc.wantAnyErr {
+				if err == nil {
+					t.Fatal("Resolve() error = nil, want non-nil")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("Resolve() unexpected error: %v", err)
 			}
@@ -168,9 +217,13 @@ func TestFileAndDirSourceResolve(t *testing.T) {
 			gotPaths := make([]string, 0, len(files))
 			gotTitles := make([]string, 0, len(files))
 			for _, file := range files {
-				rel, relErr := filepath.Rel(root, file.Path)
+				compareRoot := root
+				if _, ok := src.(*youdaoNoteSource); ok {
+					compareRoot = filepath.Dir(file.Path)
+				}
+				rel, relErr := filepath.Rel(compareRoot, file.Path)
 				if relErr != nil {
-					t.Fatalf("filepath.Rel(%q, %q): %v", root, file.Path, relErr)
+					t.Fatalf("filepath.Rel(%q, %q): %v", compareRoot, file.Path, relErr)
 				}
 				gotPaths = append(gotPaths, rel)
 				gotTitles = append(gotTitles, file.Title)
@@ -198,6 +251,17 @@ func writeTestFile(t *testing.T, path string, content string) {
 		t.Fatalf("MkdirAll(%q): %v", path, err)
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", path, err)
+	}
+}
+
+func writeExecutableFile(t *testing.T, path string, content string) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatalf("WriteFile(%q): %v", path, err)
 	}
 }

@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 )
 
 type fileSource struct {
@@ -50,9 +52,29 @@ type dirSource struct {
 	path string
 }
 
+// YoudaoNoteBridgeConfig describes how to export notes through a locally installed youdaonote bridge command.
+type YoudaoNoteBridgeConfig struct {
+	Command string
+	Args    []string
+	Env     []string
+	WorkDir string
+}
+
+type youdaoNoteSource struct {
+	cfg       YoudaoNoteBridgeConfig
+	mu        sync.Mutex
+	exportDir string
+}
+
 // DirSource returns a knowledge source that recursively resolves supported local text/PDF files in a directory.
 func DirSource(path string) KnowledgeSource {
 	return dirSource{path: path}
+}
+
+// YoudaoNoteSource returns a bridge source that shells out to a local youdaonote-compatible export command.
+// At least one arg must contain the "{output}" placeholder, which will be replaced with a temp export directory.
+func YoudaoNoteSource(cfg YoudaoNoteBridgeConfig) KnowledgeSource {
+	return &youdaoNoteSource{cfg: cfg}
 }
 
 func (s dirSource) Resolve(ctx context.Context) ([]KnowledgeFile, error) {
@@ -122,4 +144,82 @@ func titleFromPath(path string) string {
 	base := filepath.Base(path)
 	ext := filepath.Ext(base)
 	return strings.TrimSuffix(base, ext)
+}
+
+func (s *youdaoNoteSource) Resolve(ctx context.Context) ([]KnowledgeFile, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	command := strings.TrimSpace(s.cfg.Command)
+	if command == "" {
+		command = "youdaonote"
+	}
+	commandPath, err := exec.LookPath(command)
+	if err != nil {
+		return nil, fmt.Errorf("youdao bridge command %q not found: %w", command, ErrUnsupportedSource)
+	}
+
+	args, hasOutput := materializeBridgeArgs(s.cfg.Args, "")
+	if len(args) == 0 || !hasOutput {
+		return nil, fmt.Errorf("youdao bridge args must include {output}: %w", ErrUnsupportedSource)
+	}
+
+	exportDir, err := os.MkdirTemp("", "ragagent-youdao-*")
+	if err != nil {
+		return nil, fmt.Errorf("create youdao export dir: %w", err)
+	}
+
+	s.mu.Lock()
+	if s.exportDir != "" {
+		_ = os.RemoveAll(s.exportDir)
+	}
+	s.exportDir = exportDir
+	s.mu.Unlock()
+
+	args, _ = materializeBridgeArgs(s.cfg.Args, exportDir)
+	cmd := exec.CommandContext(ctx, commandPath, args...)
+	if s.cfg.WorkDir != "" {
+		cmd.Dir = s.cfg.WorkDir
+	}
+	if len(s.cfg.Env) > 0 {
+		cmd.Env = append(os.Environ(), s.cfg.Env...)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("run youdao bridge export: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	files, err := dirSource{path: exportDir}.Resolve(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("youdao bridge export produced no supported files: %w", ErrUnsupportedSource)
+	}
+	return files, nil
+}
+
+func (s *youdaoNoteSource) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.exportDir == "" {
+		return nil
+	}
+	err := os.RemoveAll(s.exportDir)
+	s.exportDir = ""
+	return err
+}
+
+func materializeBridgeArgs(args []string, outputDir string) ([]string, bool) {
+	resolved := make([]string, 0, len(args))
+	hasOutput := false
+	for _, arg := range args {
+		if strings.Contains(arg, "{output}") {
+			hasOutput = true
+			arg = strings.ReplaceAll(arg, "{output}", outputDir)
+		}
+		resolved = append(resolved, arg)
+	}
+	return resolved, hasOutput
 }

@@ -190,6 +190,9 @@ func (a *Agent) AddKnowledge(ctx context.Context, src KnowledgeSource) error {
 	if src == nil {
 		return fmt.Errorf("knowledge source is nil: %w", ErrUnsupportedSource)
 	}
+	if closer, ok := src.(interface{ Close() error }); ok {
+		defer closer.Close()
+	}
 
 	files, err := src.Resolve(ctx)
 	if err != nil {

@@ -176,6 +176,10 @@ type blockingSource struct {
 	files   []KnowledgeFile
 }
 
+type cleanupSource struct {
+	closed bool
+}
+
 func (s blockingSource) Resolve(ctx context.Context) ([]KnowledgeFile, error) {
 	select {
 	case s.started <- struct{}{}:
@@ -188,6 +192,15 @@ func (s blockingSource) Resolve(ctx context.Context) ([]KnowledgeFile, error) {
 		return nil, ctx.Err()
 	}
 	return slices.Clone(s.files), nil
+}
+
+func (s *cleanupSource) Resolve(context.Context) ([]KnowledgeFile, error) {
+	return nil, nil
+}
+
+func (s *cleanupSource) Close() error {
+	s.closed = true
+	return nil
 }
 
 func TestGetSessionReusesSameID(t *testing.T) {
@@ -485,6 +498,27 @@ func TestAddKnowledgeRejectsNilSource(t *testing.T) {
 	err := a.AddKnowledge(context.Background(), nil)
 	if !errors.Is(err, ErrUnsupportedSource) {
 		t.Fatalf("AddKnowledge(nil) error = %v, want ErrUnsupportedSource", err)
+	}
+}
+
+func TestAddKnowledgeClosesBridgeSource(t *testing.T) {
+	t.Parallel()
+
+	source := &cleanupSource{}
+
+	a := &Agent{
+		chunker:  mustNewChunkerForTest(t, 16, 4),
+		store:    &fakeStore{},
+		embedder: &fakeEmbedder{defaultVec: []float32{0.1, 0.2, 0.3}},
+		sessions: make(map[string]*Session),
+	}
+
+	err := a.AddKnowledge(context.Background(), source)
+	if err != nil {
+		t.Fatalf("AddKnowledge() error = %v", err)
+	}
+	if !source.closed {
+		t.Fatal("expected source.Close() to be called")
 	}
 }
 
