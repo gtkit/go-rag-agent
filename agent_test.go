@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -127,6 +128,46 @@ func (r *callbackRecorder) snapshot() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.events)
+}
+
+type panicCallback struct {
+	panicOn string
+}
+
+func (c *panicCallback) OnRetrieveStart(context.Context, string) {
+	if c.panicOn == "retrieve_start" {
+		panic("telemetry panic")
+	}
+}
+
+func (c *panicCallback) OnRetrieveEnd(context.Context, int, error) {
+	if c.panicOn == "retrieve_end" {
+		panic("telemetry panic")
+	}
+}
+
+func (c *panicCallback) OnToolStart(context.Context, string) {
+	if c.panicOn == "tool_start" {
+		panic("telemetry panic")
+	}
+}
+
+func (c *panicCallback) OnToolEnd(context.Context, string, error) {
+	if c.panicOn == "tool_end" {
+		panic("telemetry panic")
+	}
+}
+
+func (c *panicCallback) OnModelStart(context.Context, string) {
+	if c.panicOn == "model_start" {
+		panic("telemetry panic")
+	}
+}
+
+func (c *panicCallback) OnModelEnd(context.Context, string, error) {
+	if c.panicOn == "model_end" {
+		panic("telemetry panic")
+	}
 }
 
 type blockingSource struct {
@@ -572,6 +613,41 @@ func TestAskRetrievalCallbackOrder(t *testing.T) {
 		pos["tool_start"] < pos["retrieve_end"] &&
 		pos["retrieve_end"] < pos["tool_end"]) {
 		t.Fatalf("unexpected callback order: %v", events)
+	}
+}
+
+func TestAskTelemetryPanicReturnsError(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{
+		cfg: Config{
+			TopK:                5,
+			SimilarityThreshold: 0.5,
+			ChatModel:           "chat-test",
+			MaxHistoryRounds:    8,
+		},
+		store: &fakeStore{
+			searchHits: []storage.SearchHit{
+				{
+					Chunk: storage.ChunkRecord{
+						ChunkID:    "doc:0",
+						SourcePath: "/tmp/doc.md",
+						Title:      "doc",
+						Text:       "alpha beta",
+					},
+					Score: 0.95,
+				},
+			},
+		},
+		embedder:   &fakeEmbedder{defaultVec: []float32{1, 2, 3}},
+		runner:     &fakeRunner{answer: "ok"},
+		dispatcher: telemetry.NewDispatcher([]telemetry.Callback{&panicCallback{panicOn: "retrieve_start"}}),
+		sessions:   make(map[string]*Session),
+	}
+
+	_, err := a.GetSession("panic-telemetry").Ask(context.Background(), "what is this?")
+	if err == nil || !strings.Contains(err.Error(), "callback panic") {
+		t.Fatalf("Ask() error = %v, want callback panic error", err)
 	}
 }
 
