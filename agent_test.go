@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jung-kurt/gofpdf"
 
 	"my-gtkit-package/go-rag-agent/internal/graph"
 	"my-gtkit-package/go-rag-agent/internal/memory"
@@ -725,6 +728,59 @@ func TestAddKnowledgeClosesBridgeSource(t *testing.T) {
 	}
 }
 
+func TestAddKnowledgeUsesPDFOCRBridgeForBlankPDF(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	pdfPath := filepath.Join(root, "scan.pdf")
+	writeBlankPDFForAgentTest(t, pdfPath)
+
+	markerPath := filepath.Join(root, "ocr-marker.txt")
+	scriptPath := filepath.Join(root, "ocr-bridge.sh")
+	writeExecutableFile(t, scriptPath, fmt.Sprintf(`#!/bin/sh
+printf '%%s' "$1" > %q
+printf 'OCR text from bridge' > "$2"
+`, markerPath))
+
+	a := &Agent{
+		cfg: Config{
+			PDFOCRBridge: PDFOCRBridgeConfig{
+				Command: scriptPath,
+				Args:    []string{"{input}", "{output}"},
+			},
+		},
+		chunker:  mustNewChunkerForTest(t, 64, 0),
+		store:    &fakeStore{},
+		embedder: &fakeEmbedder{defaultVec: []float32{0.1, 0.2, 0.3}},
+		sessions: make(map[string]*Session),
+	}
+
+	if err := a.AddKnowledge(t.Context(), FileSource(pdfPath)); err != nil {
+		t.Fatalf("AddKnowledge() error = %v", err)
+	}
+
+	markerData, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", markerPath, err)
+	}
+	if got := strings.TrimSpace(string(markerData)); got != pdfPath {
+		t.Fatalf("OCR bridge input path = %q, want %q", got, pdfPath)
+	}
+
+	store := a.store.(*fakeStore)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.upsertBatches) != 1 {
+		t.Fatalf("upsert call count = %d, want 1", len(store.upsertBatches))
+	}
+	if len(store.upsertBatches[0]) == 0 {
+		t.Fatal("upsert batch should not be empty")
+	}
+	if !strings.Contains(store.upsertBatches[0][0].Text, "OCR text from bridge") {
+		t.Fatalf("upsert text = %q, want OCR output", store.upsertBatches[0][0].Text)
+	}
+}
+
 func TestCloseWaitsInFlightAddKnowledge(t *testing.T) {
 	t.Parallel()
 
@@ -1018,4 +1074,14 @@ func mustNewChunkerForTest(t *testing.T, size, overlap int) *rag.Chunker {
 		t.Fatalf("NewChunker() error = %v", err)
 	}
 	return chunker
+}
+
+func writeBlankPDFForAgentTest(t *testing.T, path string) {
+	t.Helper()
+
+	p := gofpdf.New("P", "mm", "A4", "")
+	p.AddPage()
+	if err := p.OutputFileAndClose(path); err != nil {
+		t.Fatalf("OutputFileAndClose(%q): %v", path, err)
+	}
 }

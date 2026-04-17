@@ -63,11 +63,11 @@ func TestLoadFile(t *testing.T) {
 				}
 
 				altPath := filepath.Join(root, "dir", "..", "dir", "knowledge.md")
-				docA, err := LoadFile(context.Background(), path, "Knowledge", nil)
+				docA, err := LoadFile(context.Background(), path, "Knowledge", nil, LoadOptions{})
 				if err != nil {
 					t.Fatalf("LoadFile(path) error: %v", err)
 				}
-				docB, err := LoadFile(context.Background(), altPath, "Knowledge", nil)
+				docB, err := LoadFile(context.Background(), altPath, "Knowledge", nil, LoadOptions{})
 				if err != nil {
 					t.Fatalf("LoadFile(altPath) error: %v", err)
 				}
@@ -139,8 +139,100 @@ func TestLoadFile(t *testing.T) {
 			t.Parallel()
 
 			ctx, path, title, metadata := tc.prepare(t)
-			doc, err := LoadFile(ctx, path, title, metadata)
+			doc, err := LoadFile(ctx, path, title, metadata, LoadOptions{})
 			tc.assertion(t, doc, err)
+		})
+	}
+}
+
+func TestLoadFilePDFOCRFallback(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		prepare   func(t *testing.T) (string, LoadOptions, string)
+		assertion func(t *testing.T, doc Document, err error, markerPath string)
+	}{
+		{
+			name: "text pdf uses direct extraction and skips ocr",
+			prepare: func(t *testing.T) (string, LoadOptions, string) {
+				t.Helper()
+				root := t.TempDir()
+				path := filepath.Join(root, "text.pdf")
+				writeTestPDF(t, path, []string{"Hello PDF", "Second line"})
+				markerPath := filepath.Join(root, "ocr-called")
+				return path, LoadOptions{
+					PDFOCR: func(context.Context, string) (string, error) {
+						if err := os.WriteFile(markerPath, []byte("called"), 0o644); err != nil {
+							t.Fatalf("WriteFile(%q): %v", markerPath, err)
+						}
+						return "OCR text", nil
+					},
+					MinDirectTextRunes: 0,
+				}, markerPath
+			},
+			assertion: func(t *testing.T, doc Document, err error, markerPath string) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("LoadFile() error = %v", err)
+				}
+				if !strings.Contains(doc.Content, "Hello PDF") {
+					t.Fatalf("LoadFile() content = %q, want direct pdf text", doc.Content)
+				}
+				if _, statErr := os.Stat(markerPath); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("OCR marker stat err = %v, want not exist", statErr)
+				}
+			},
+		},
+		{
+			name: "blank pdf falls back to ocr output",
+			prepare: func(t *testing.T) (string, LoadOptions, string) {
+				t.Helper()
+				root := t.TempDir()
+				path := filepath.Join(root, "scan.pdf")
+				writeBlankPDF(t, path)
+				return path, LoadOptions{
+					PDFOCR: func(context.Context, string) (string, error) {
+						return "OCR line one\nOCR line two", nil
+					},
+				}, ""
+			},
+			assertion: func(t *testing.T, doc Document, err error, _ string) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("LoadFile() error = %v", err)
+				}
+				if !strings.Contains(doc.Content, "OCR line one") {
+					t.Fatalf("LoadFile() content = %q, want OCR text", doc.Content)
+				}
+			},
+		},
+		{
+			name: "blank pdf without ocr returns clear error",
+			prepare: func(t *testing.T) (string, LoadOptions, string) {
+				t.Helper()
+				root := t.TempDir()
+				path := filepath.Join(root, "scan.pdf")
+				writeBlankPDF(t, path)
+				return path, LoadOptions{}, ""
+			},
+			assertion: func(t *testing.T, _ Document, err error, _ string) {
+				t.Helper()
+				if err == nil || !strings.Contains(err.Error(), "requires OCR") {
+					t.Fatalf("LoadFile() error = %v, want clear OCR-required error", err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			path, opts, markerPath := tc.prepare(t)
+			doc, err := LoadFile(t.Context(), path, "Knowledge PDF", nil, opts)
+			tc.assertion(t, doc, err, markerPath)
 		})
 	}
 }
@@ -154,6 +246,16 @@ func writeTestPDF(t *testing.T, path string, lines []string) {
 	for _, line := range lines {
 		p.CellFormat(0, 10, line, "", 1, "", false, 0, "")
 	}
+	if err := p.OutputFileAndClose(path); err != nil {
+		t.Fatalf("OutputFileAndClose(%q): %v", path, err)
+	}
+}
+
+func writeBlankPDF(t *testing.T, path string) {
+	t.Helper()
+
+	p := gofpdf.New("P", "mm", "A4", "")
+	p.AddPage()
 	if err := p.OutputFileAndClose(path); err != nil {
 		t.Fatalf("OutputFileAndClose(%q): %v", path, err)
 	}

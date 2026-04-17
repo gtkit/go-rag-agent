@@ -28,6 +28,7 @@ type Config struct {
 	RequestTimeout      time.Duration
 	EnableHybridSearch  bool
 	EnableRerank        bool
+	PDFOCRBridge        PDFOCRBridgeConfig
 	Logger              Logger
 	Callbacks           []Callback
 }
@@ -64,6 +65,7 @@ func (c Config) normalized() Config {
 	c.EmbeddingBaseURL = strings.TrimSpace(c.EmbeddingBaseURL)
 	c.EmbeddingAPIKey = strings.TrimSpace(c.EmbeddingAPIKey)
 	c.DataDir = strings.TrimSpace(c.DataDir)
+	c.PDFOCRBridge = c.PDFOCRBridge.normalized()
 	return c
 }
 
@@ -116,6 +118,9 @@ func (c Config) Validate() error {
 	}
 	if c.EnableRerank {
 		return fmt.Errorf("enable rerank is phase 2: %w", ErrInvalidConfig)
+	}
+	if err := c.PDFOCRBridge.validate(); err != nil {
+		return err
 	}
 	return nil
 }

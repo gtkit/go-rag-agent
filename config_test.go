@@ -101,6 +101,47 @@ func TestConfigValidate(t *testing.T) {
 			},
 			wantErr: nil,
 		},
+		{
+			name: "pdf ocr bridge requires command when configured",
+			mutate: func(cfg *Config) {
+				cfg.PDFOCRBridge = PDFOCRBridgeConfig{
+					Args: []string{"{input}", "{output}"},
+				}
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "pdf ocr bridge requires input and output placeholders",
+			mutate: func(cfg *Config) {
+				cfg.PDFOCRBridge = PDFOCRBridgeConfig{
+					Command: "ocr-tool",
+					Args:    []string{"{input}"},
+				}
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "pdf ocr bridge rejects negative min direct text runes",
+			mutate: func(cfg *Config) {
+				cfg.PDFOCRBridge = PDFOCRBridgeConfig{
+					Command:            "ocr-tool",
+					Args:               []string{"{input}", "{output}"},
+					MinDirectTextRunes: -1,
+				}
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "pdf ocr bridge accepts complete configuration",
+			mutate: func(cfg *Config) {
+				cfg.PDFOCRBridge = PDFOCRBridgeConfig{
+					Command:            "ocr-tool",
+					Args:               []string{"{input}", "{output}"},
+					MinDirectTextRunes: 24,
+				}
+			},
+			wantErr: nil,
+		},
 	}
 
 	for _, tc := range tests {

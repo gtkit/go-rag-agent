@@ -30,6 +30,18 @@
 - **WHEN** 调用方导入一个包含可提取文本内容的本地 PDF 文件
 - **THEN** 库 MUST 抽取其中的文本，并将该文本送入常规的分块与 embedding 流程
 
+#### Scenario: 对扫描版 PDF 使用 OCR fallback
+- **WHEN** 调用方导入一个无法直接提取可用文本的本地 PDF，且已配置可用的 OCR bridge
+- **THEN** 库 MUST 调用该 OCR bridge 提取文本，并将 OCR 文本送入常规的分块与 embedding 流程
+
+#### Scenario: 扫描版 PDF 缺少 OCR 配置时返回清晰错误
+- **WHEN** 调用方导入一个无法直接提取可用文本的本地 PDF，且当前未配置可用 OCR bridge
+- **THEN** 库 MUST 返回一个清晰错误，指出该 PDF 需要 OCR 配置，而不能静默导入空内容
+
+#### Scenario: 文本型 PDF 不强制走 OCR
+- **WHEN** 调用方导入一个已经可以直接提取可用文本的本地 PDF，且同时配置了 OCR bridge
+- **THEN** 库 MUST 优先使用直接文本提取结果，而不是无条件执行 OCR
+
 #### Scenario: 同一 store 上的并发 upsert 被串行化
 - **WHEN** 两个知识导入操作并发命中同一个 store
 - **THEN** 该 store MUST 一次只执行一个 upsert，使 chunk 替换和 stale cleanup 不会交错成混合状态

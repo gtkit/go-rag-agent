@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	pdf "github.com/ledongthuc/pdf"
 )
@@ -20,8 +21,14 @@ type Document struct {
 	Content    string
 }
 
+// LoadOptions 定义文件加载时的可选能力。
+type LoadOptions struct {
+	PDFOCR             func(context.Context, string) (string, error)
+	MinDirectTextRunes int
+}
+
 // LoadFile 把本地文件读取为一个 RAG 文档。
-func LoadFile(ctx context.Context, path string, title string, metadata map[string]string) (Document, error) {
+func LoadFile(ctx context.Context, path string, title string, metadata map[string]string, opts LoadOptions) (Document, error) {
 	if err := ctx.Err(); err != nil {
 		return Document{}, err
 	}
@@ -30,7 +37,7 @@ func LoadFile(ctx context.Context, path string, title string, metadata map[strin
 		return Document{}, fmt.Errorf("normalize path %q: %w", path, err)
 	}
 
-	content, err := readDocumentContent(path)
+	content, err := readDocumentContent(ctx, path, opts)
 	if err != nil {
 		return Document{}, fmt.Errorf("read file %q: %w", path, err)
 	}
@@ -44,17 +51,36 @@ func LoadFile(ctx context.Context, path string, title string, metadata map[strin
 	}, nil
 }
 
-func readDocumentContent(path string) ([]byte, error) {
+func readDocumentContent(ctx context.Context, path string, opts LoadOptions) ([]byte, error) {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".pdf":
-		text, err := extractPDFText(path)
-		if err != nil {
-			return nil, err
-		}
-		return []byte(text), nil
+		return readPDFDocumentContent(ctx, path, opts)
 	default:
 		return os.ReadFile(path)
 	}
+}
+
+func readPDFDocumentContent(ctx context.Context, path string, opts LoadOptions) ([]byte, error) {
+	text, err := extractPDFText(path)
+	if err != nil {
+		return nil, err
+	}
+	if hasUsableDirectPDFText(text, opts.MinDirectTextRunes) {
+		return []byte(text), nil
+	}
+	if opts.PDFOCR == nil {
+		return nil, fmt.Errorf("pdf %q requires OCR bridge configuration", path)
+	}
+
+	text, err = opts.PDFOCR(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("ocr pdf: %w", err)
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, fmt.Errorf("ocr pdf %q produced empty text", path)
+	}
+	return []byte(text), nil
 }
 
 func extractPDFText(path string) (string, error) {
@@ -74,6 +100,17 @@ func extractPDFText(path string) (string, error) {
 		return "", fmt.Errorf("read extracted pdf text: %w", err)
 	}
 	return strings.TrimSpace(string(data)), nil
+}
+
+func hasUsableDirectPDFText(text string, minDirectTextRunes int) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	if minDirectTextRunes <= 0 {
+		return true
+	}
+	return utf8.RuneCountInString(text) >= minDirectTextRunes
 }
 
 func normalizeStablePath(path string) (string, error) {

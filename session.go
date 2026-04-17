@@ -214,7 +214,7 @@ func (a *Agent) AddKnowledge(ctx context.Context, src KnowledgeSource) error {
 	for _, file := range files {
 		currentSourcePaths = append(currentSourcePaths, file.Path)
 
-		doc, err := rag.LoadFile(ctx, file.Path, file.Title, file.Metadata)
+		doc, err := rag.LoadFile(ctx, file.Path, file.Title, file.Metadata, a.loaderOptions())
 		if err != nil {
 			return fmt.Errorf("load knowledge file %q: %w", file.Path, err)
 		}
@@ -291,5 +291,12 @@ func knowledgeDirectoryRoot(src KnowledgeSource) (string, bool) {
 		return source.path, true
 	default:
 		return "", false
+	}
+}
+
+func (a *Agent) loaderOptions() rag.LoadOptions {
+	return rag.LoadOptions{
+		PDFOCR:             a.cfg.PDFOCRBridge.extractor(),
+		MinDirectTextRunes: a.cfg.PDFOCRBridge.MinDirectTextRunes,
 	}
 }

@@ -101,6 +101,7 @@ func main() {
 - `ChunkOverlap` 必须满足 `>= 0` 且 `< ChunkSize`。
 - `EnableHybridSearch` 和 `EnableRerank` 在 Phase 1 会被拒绝。
 - `MaxToolCalls` 目前在 Phase 1 里保留字段，但还没有真正接入运行时控制。
+- `PDFOCRBridge` 只有在你要导入扫描版 PDF 时才需要配置；如果配置了，`Args` 必须同时包含 `{input}` 和 `{output}` 占位符。
 
 ## 知识导入流程
 
@@ -109,6 +110,7 @@ func main() {
    - `.txt`
    - `.md`
    - 文本型 `.pdf`
+   - 扫描版 `.pdf`（配置 OCR bridge 后）
 2. `AddKnowledge` 会先解析文件，再加载为 RAG 文档。
 3. 文本按 rune 窗口进行切块（`ChunkSize`、`ChunkOverlap`）。
 4. 每个 chunk 通过 embedding 适配器向量化。
@@ -122,7 +124,47 @@ func main() {
 - `FileSource(path)` 仍然只处理单文件；有道笔记桥接导入也不参与目录级删除同步。
 
 说明：
-- 扫描版 PDF / OCR 目前不在 Phase 1 范围内。
+- 文本型 PDF 会优先直接抽取文本。
+- 当 PDF 无法直接抽取可用文本时，如果配置了 `PDFOCRBridge`，会自动走 OCR fallback。
+- 如果扫描版 PDF 没有配置 `PDFOCRBridge`，导入会返回明确错误，不会静默导入空内容。
+
+## 扫描版 PDF / OCR
+
+如果你的知识库里有扫描版 PDF、图片型 PDF，可以在 `Config` 里配置 `PDFOCRBridge`。
+
+设计约束是：
+- 库本身不绑定某个 OCR SDK 或云服务
+- 你提供本地 OCR 命令
+- 命令读取 `{input}` 指向的 PDF，并把识别后的纯文本写入 `{output}` 指向的文本文件
+
+示例：
+
+```go
+cfg := ragagent.Config{
+	ChatModel:      "gpt-4o-mini",
+	ChatBaseURL:    "https://api.openai.example/v1",
+	ChatAPIKey:     "replace-with-your-chat-key",
+	EmbeddingModel: "text-embedding-3-small",
+	EmbeddingAPIKey:"replace-with-your-embedding-key",
+	PDFOCRBridge: ragagent.PDFOCRBridgeConfig{
+		Command: "my-pdf-ocr",
+		Args: []string{
+			"{input}",
+			"{output}",
+		},
+	},
+}
+```
+
+你可以把它接到自己的包装脚本，或者系统里已有的 OCR 工具链。当前库只约定 bridge 契约，不强制具体供应商。
+
+可选项：
+- `MinDirectTextRunes`
+  说明：当直接抽取出来的 PDF 文本 rune 数低于这个值时，也会走 OCR fallback。默认 `0`，表示只在“完全提不出可用文本”时才 OCR。
+
+限制：
+- OCR 结果质量取决于你配置的本地 OCR 工具和语言包。
+- 当前只接收 OCR bridge 输出的纯文本，不做版面分析、表格结构恢复或富文本重建。
 
 ## 过滤检索
 
