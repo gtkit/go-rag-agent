@@ -4,7 +4,7 @@ import (
 	"fmt"
 )
 
-// Chunk is the self-contained RAG-layer chunk model.
+// Chunk 是 RAG 层自包含的文本分块模型。
 type Chunk struct {
 	ChunkID    string
 	ParentID   string
@@ -16,7 +16,7 @@ type Chunk struct {
 	EndRune    int
 }
 
-// Chunker splits a document by rune length with overlap.
+// Chunker 按 rune 长度和 overlap 规则切分文档。
 type Chunker struct {
 	size    int
 	overlap int

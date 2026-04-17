@@ -14,12 +14,12 @@ import (
 
 const retrievalToolName = "retrieve_context"
 
-// Retriever defines retrieval search by plain-text query.
+// Retriever 定义基于纯文本查询的检索接口。
 type Retriever interface {
 	Search(ctx context.Context, query string) ([]storage.SearchHit, error)
 }
 
-// RetrievalTool adapts retriever search into an Eino invokable tool.
+// RetrievalTool 把检索能力适配为 Eino 可调用工具。
 type RetrievalTool struct {
 	retriever Retriever
 }
@@ -28,14 +28,14 @@ type retrieveArgs struct {
 	Query string `json:"query"`
 }
 
-// NewRetrievalTool creates a retrieval tool.
+// NewRetrievalTool 创建检索工具。
 func NewRetrievalTool(retriever Retriever) *RetrievalTool {
 	return &RetrievalTool{
 		retriever: retriever,
 	}
 }
 
-// Info returns tool metadata for model tool-calling.
+// Info 返回模型调用工具所需的元信息。
 func (t *RetrievalTool) Info(context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: retrievalToolName,
@@ -50,7 +50,7 @@ func (t *RetrievalTool) Info(context.Context) (*schema.ToolInfo, error) {
 	}, nil
 }
 
-// InvokableRun executes retrieval and returns newline-joined evidence lines.
+// InvokableRun 执行检索，并返回按行拼接的证据文本。
 func (t *RetrievalTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...einotool.Option) (string, error) {
 	if t.retriever == nil {
 		return "", fmt.Errorf("retriever is required")

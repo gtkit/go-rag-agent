@@ -24,7 +24,7 @@ const (
 	metadataKeyUserPrefix = "rag_meta_"
 )
 
-// ChromemStore is a chromem-backed VectorStore.
+// ChromemStore 是基于 chromem 的 VectorStore 实现。
 type ChromemStore struct {
 	db         *chromem.DB
 	collection *chromem.Collection

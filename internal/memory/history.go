@@ -2,20 +2,20 @@ package memory
 
 import "sync"
 
-// Turn stores one user-assistant exchange.
+// Turn 表示一次用户与助手的对话往返。
 type Turn struct {
 	User      string
 	Assistant string
 }
 
-// History keeps bounded conversation turns for one session.
+// History 为单个 Session 保存有界对话历史。
 type History struct {
 	mu        sync.RWMutex
 	maxRounds int
 	turns     []Turn
 }
 
-// NewHistory creates bounded session history with maxRounds capacity.
+// NewHistory 创建一个按最大轮次限制的会话历史。
 func NewHistory(maxRounds int) *History {
 	return &History{
 		maxRounds: maxRounds,
@@ -23,7 +23,7 @@ func NewHistory(maxRounds int) *History {
 	}
 }
 
-// Append adds one turn and trims oldest turns when over capacity.
+// Append 追加一轮对话，并在超限时裁剪最旧内容。
 func (h *History) Append(user, assistant string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -43,21 +43,21 @@ func (h *History) Append(user, assistant string) {
 	}
 }
 
-// Clear removes all stored turns.
+// Clear 清空当前保存的所有对话轮次。
 func (h *History) Clear() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.turns = make([]Turn, 0, max(h.maxRounds, 0))
 }
 
-// Turns returns a copy of current stored turns.
+// Turns 返回当前历史轮次的拷贝。
 func (h *History) Turns() []Turn {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return append([]Turn(nil), h.turns...)
 }
 
-// LastUserQueries returns user texts in stored order.
+// LastUserQueries 按存储顺序返回用户侧提问文本。
 func (h *History) LastUserQueries() []string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

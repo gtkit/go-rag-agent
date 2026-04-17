@@ -17,7 +17,7 @@ type fileSource struct {
 	path string
 }
 
-// FileSource returns a knowledge source that resolves exactly one local text or PDF file path.
+// FileSource 返回一个仅解析单个本地文本或 PDF 文件的知识源。
 func FileSource(path string) KnowledgeSource {
 	return fileSource{path: path}
 }
@@ -52,7 +52,7 @@ type dirSource struct {
 	path string
 }
 
-// YoudaoNoteBridgeConfig describes how to export notes through a locally installed youdaonote bridge command.
+// YoudaoNoteBridgeConfig 描述如何通过本地安装的 youdaonote 桥接命令导出笔记。
 type YoudaoNoteBridgeConfig struct {
 	Command string
 	Args    []string
@@ -66,13 +66,13 @@ type youdaoNoteSource struct {
 	exportDir string
 }
 
-// DirSource returns a knowledge source that recursively resolves supported local text/PDF files in a directory.
+// DirSource 返回一个递归解析目录内受支持文本/PDF 文件的知识源。
 func DirSource(path string) KnowledgeSource {
 	return dirSource{path: path}
 }
 
-// YoudaoNoteSource returns a bridge source that shells out to a local youdaonote-compatible export command.
-// At least one arg must contain the "{output}" placeholder, which will be replaced with a temp export directory.
+// YoudaoNoteSource 返回一个有道笔记桥接知识源，通过本地 youdaonote 兼容命令导出数据。
+// Args 中至少一个参数必须包含 "{output}" 占位符，运行时会替换成临时导出目录。
 func YoudaoNoteSource(cfg YoudaoNoteBridgeConfig) KnowledgeSource {
 	return &youdaoNoteSource{cfg: cfg}
 }

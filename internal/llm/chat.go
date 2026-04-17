@@ -9,10 +9,10 @@ import (
 	"github.com/cloudwego/eino/components/model"
 )
 
-// ChatModel represents a tool-capable chat model.
+// ChatModel 表示支持工具调用的聊天模型。
 type ChatModel = model.ToolCallingChatModel
 
-// ChatConfig holds construction config for chat model adapters.
+// ChatConfig 保存聊天模型适配器的构造配置。
 type ChatConfig struct {
 	Model   string
 	BaseURL string
@@ -27,7 +27,7 @@ func (c ChatConfig) normalized() ChatConfig {
 	return c
 }
 
-// Validate checks whether the chat config is complete and valid.
+// Validate 检查聊天模型配置是否完整且有效。
 func (c ChatConfig) Validate() error {
 	c = c.normalized()
 

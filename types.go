@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Logger is the logging contract used by the root package.
+// Logger 是根包使用的日志接口。
 type Logger interface {
 	Debug(msg string, kv ...any)
 	Info(msg string, kv ...any)
@@ -13,7 +13,7 @@ type Logger interface {
 	Error(msg string, kv ...any)
 }
 
-// Callback receives lifecycle hooks for retrieval, tool, and model operations.
+// Callback 接收检索、工具和模型执行的生命周期回调。
 type Callback interface {
 	OnRetrieveStart(ctx context.Context, query string)
 	OnRetrieveEnd(ctx context.Context, resultCount int, err error)
@@ -23,29 +23,29 @@ type Callback interface {
 	OnModelEnd(ctx context.Context, model string, err error)
 }
 
-// EventType identifies the type of a streaming event.
+// EventType 标识流式事件的类型。
 type EventType string
 
 const (
-	// EventRetrieveStart is emitted when retrieval begins.
+	// EventRetrieveStart 表示开始检索。
 	EventRetrieveStart EventType = "retrieve_start"
-	// EventRetrieveEnd is emitted when retrieval completes.
+	// EventRetrieveEnd 表示检索完成。
 	EventRetrieveEnd EventType = "retrieve_end"
-	// EventToolStart is emitted when a tool call begins.
+	// EventToolStart 表示工具调用开始。
 	EventToolStart EventType = "tool_start"
-	// EventToolEnd is emitted when a tool call completes.
+	// EventToolEnd 表示工具调用结束。
 	EventToolEnd EventType = "tool_end"
-	// EventAnswerChunk is emitted for incremental answer text output.
+	// EventAnswerChunk 表示增量答案文本输出。
 	EventAnswerChunk EventType = "answer_chunk"
-	// EventCitation is emitted when a citation becomes available.
+	// EventCitation 表示引用信息已可用。
 	EventCitation EventType = "citation"
-	// EventError is emitted when an execution error occurs.
+	// EventError 表示执行期间发生错误。
 	EventError EventType = "error"
-	// EventDone is emitted when streaming completes.
+	// EventDone 表示流式输出完成。
 	EventDone EventType = "done"
 )
 
-// Citation describes the source span backing part of an answer.
+// Citation 描述支撑答案的一段来源信息。
 type Citation struct {
 	SourcePath string
 	Title      string
@@ -54,13 +54,13 @@ type Citation struct {
 	EndRune    int
 }
 
-// Answer is a final answer plus its supporting citations.
+// Answer 表示最终答案及其引用。
 type Answer struct {
 	Text      string
 	Citations []Citation
 }
 
-// StreamEvent is a callback payload for incremental execution updates.
+// StreamEvent 是流式执行回调的事件载荷。
 type StreamEvent struct {
 	Type      EventType
 	Content   string
@@ -71,14 +71,14 @@ type StreamEvent struct {
 	Timestamp time.Time
 }
 
-// KnowledgeFile represents a resolved file candidate for ingestion.
+// KnowledgeFile 表示解析后的可导入文件。
 type KnowledgeFile struct {
 	Path     string
 	Title    string
 	Metadata map[string]string
 }
 
-// KnowledgeSource resolves knowledge files from one source definition.
+// KnowledgeSource 从一种来源定义中解析出可导入文件。
 type KnowledgeSource interface {
 	Resolve(ctx context.Context) ([]KnowledgeFile, error)
 }

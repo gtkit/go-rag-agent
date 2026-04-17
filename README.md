@@ -1,14 +1,18 @@
 # go-rag-agent
 
-`go-rag-agent` is a Go 1.26.2 RAG runtime with local ingestion, chromem-backed vector retrieval, session memory, and OpenAI-compatible chat/embedding adapters.
+`go-rag-agent` 是一个基于 Go 1.26.2 的本地优先 RAG 运行时，提供：
+- 本地知识导入
+- chromem 向量检索
+- 会话记忆
+- OpenAI-compatible 聊天 / embedding 适配
 
-## Installation
+## 安装
 
-Current module path is `my-gtkit-package/go-rag-agent`, which is used as a local/private import path in this repository.
+当前模块路径是 `my-gtkit-package/go-rag-agent`，它在这个仓库里按本地/内部模块路径使用。
 
-Use it from a checked-out workspace or an internal VCS path that provides the same module path.
+推荐在本地工作区或内部代码仓中引用它，而不是按公网模块直接 `go get`。
 
-Example (consumer module using local checkout):
+示例：
 
 ```go
 require my-gtkit-package/go-rag-agent v0.0.0
@@ -16,7 +20,7 @@ require my-gtkit-package/go-rag-agent v0.0.0
 replace my-gtkit-package/go-rag-agent => ../go-rag-agent
 ```
 
-## Quick Start
+## 快速开始
 
 ```go
 package main
@@ -75,73 +79,110 @@ func main() {
 }
 ```
 
-## Config Reference
+## 配置说明
 
-Required:
+必填项：
 - `ChatModel`
 - `ChatBaseURL`
 - `ChatAPIKey`
 - `EmbeddingModel`
 
-Optional fields (defaults applied by `New` / `Validate`):
-- `TopK` (`5`)
-- `ChunkSize` (`1000`)
-- `MaxHistoryRounds` (`8`)
-- `MaxIterations` (`3`)
-- `RequestTimeout` (`30s`)
+可选项（由 `New` / `Validate` 应用默认值）：
+- `TopK`（默认 `5`）
+- `ChunkSize`（默认 `1000`）
+- `MaxHistoryRounds`（默认 `8`）
+- `MaxIterations`（默认 `3`）
+- `RequestTimeout`（默认 `30s`）
 
-Validation notes:
-- Empty `DataDir` keeps in-memory vector storage (no forced `"."` persistence path).
-- `SimilarityThreshold: 0` is preserved as-is and keeps non-negative-similarity hits; use a negative value if you want to include negative-similarity matches too.
-- `ChunkSize` must fit within the current assembled evidence budget (`<= 4000` runes).
-- `ChunkOverlap` must be `>=0` and `< ChunkSize`.
-- `EnableHybridSearch` and `EnableRerank` are rejected in phase 1.
-- `MaxToolCalls` exists in `Config` but is reserved in phase 1 runtime wiring.
+校验说明：
+- 空 `DataDir` 表示使用内存模式，不会强制写入当前目录。
+- `SimilarityThreshold: 0` 会保留非负相似度结果；如果你希望连负相似度结果也保留，需要传负值。
+- `ChunkSize` 必须不超过当前证据拼装预算（`<= 4000` rune）。
+- `ChunkOverlap` 必须满足 `>= 0` 且 `< ChunkSize`。
+- `EnableHybridSearch` 和 `EnableRerank` 在 Phase 1 会被拒绝。
+- `MaxToolCalls` 目前在 Phase 1 里保留字段，但还没有真正接入运行时控制。
 
-## Ingestion Workflow
+## 知识导入流程
 
-1. Provide a source via `FileSource(path)` or `DirSource(path)` (`.txt`, `.md`, and text-based `.pdf`).
-2. `AddKnowledge` resolves files and loads content into RAG documents.
-   Plain text PDFs are supported; scanned-image PDFs and OCR are not part of phase 1.
-3. Content is chunked by rune window (`ChunkSize`, `ChunkOverlap`).
-4. Chunks are embedded through the configured embedding adapter.
-5. Records are upserted into local chromem storage.
+1. 通过 `FileSource(path)` 或 `DirSource(path)` 提供来源。
+   当前支持：
+   - `.txt`
+   - `.md`
+   - 文本型 `.pdf`
+2. `AddKnowledge` 会先解析文件，再加载为 RAG 文档。
+3. 文本按 rune 窗口进行切块（`ChunkSize`、`ChunkOverlap`）。
+4. 每个 chunk 通过 embedding 适配器向量化。
+5. 结果写入本地 chromem 存储。
 
-## Session Isolation Model
+说明：
+- 扫描版 PDF / OCR 目前不在 Phase 1 范围内。
 
-- `GetSession(id)` returns one stable session instance per ID.
-- Each session has independent history state (`MaxHistoryRounds` bounded).
-- Same-session asks are serialized (`Ask`/`AskStream` cannot execute concurrently on the same session).
-- Different sessions can run concurrently.
+## 有道笔记桥接导入
 
-## Streaming Behavior
+当前支持通过本地 `youdaonote` 命令做桥接导入，不直接走有道云笔记 OpenAPI。
 
-`AskStream` emits `StreamEvent` values with these types:
-- `retrieve_start`, `retrieve_end`
-- `tool_start`, `tool_end`
+用法是创建 `YoudaoNoteSource(...)`，由本地命令先导出到临时目录，再复用现有本地文件导入流程。
+
+示例：
+
+```go
+src := ragagent.YoudaoNoteSource(ragagent.YoudaoNoteBridgeConfig{
+	Command: "youdaonote",
+	Args: []string{
+		"export",
+		"--output", "{output}",
+	},
+})
+
+if err := agent.AddKnowledge(ctx, src); err != nil {
+	log.Fatalf("add youdao knowledge: %v", err)
+}
+```
+
+约束：
+- 机器上必须已经安装可用的 `youdaonote` 命令。
+- `Args` 中至少一个参数必须包含 `{output}` 占位符，运行时会替换成临时导出目录。
+- 命令执行失败、命令不存在、或者导出后没有生成受支持文件，都会返回明确错误。
+
+## 会话隔离模型
+
+- `GetSession(id)` 会为同一个 ID 返回稳定复用的 Session。
+- 每个 Session 都有自己的历史状态（受 `MaxHistoryRounds` 限制）。
+- 同一个 Session 上，`Ask` / `AskStream` 会串行执行。
+- 不同 Session 之间可以并发执行。
+
+## 流式行为
+
+`AskStream` 会通过 `StreamEvent` 发送这些事件：
+- `retrieve_start`
+- `retrieve_end`
+- `tool_start`
+- `tool_end`
 - `answer_chunk`
 - `citation`
 - `error`
 - `done`
 
-If your emitter callback returns an error, streaming stops and the call returns that error.
+如果你的 emitter 回调返回错误，流式过程会立刻停止并把这个错误返回给调用方。
 
-## Retrieval Latency Design
+## 检索延迟设计
 
-- Single-query embedding per ask.
-- Vector search is bounded by `TopK` and `SimilarityThreshold`.
-- Context assembly deduplicates chunk IDs and caps evidence size (`maxEvidenceChars = 4000`).
-- Retrieval callback hooks are lightweight and synchronous.
+- 每次查询只做一次 query embedding。
+- 向量检索受 `TopK` 和 `SimilarityThreshold` 控制。
+- 上下文拼装会按 `ChunkID` 去重，并限制证据总长度（`maxEvidenceChars = 4000`）。
+- 检索回调是轻量、同步执行的。
 
-## Generation Latency Design
+## 生成延迟设计
 
-- Model/tool loop is bounded by `MaxIterations`.
-- Per-request external calls use `RequestTimeout`.
-- Session history is bounded (`MaxHistoryRounds`) to avoid unbounded prompt growth.
-- Streaming path emits incremental answer chunks to reduce time-to-first-token perception.
+- 模型 / 工具循环受 `MaxIterations` 约束。
+- 每个请求的外部调用受 `RequestTimeout` 控制。
+- Session 历史是有界的（`MaxHistoryRounds`），避免 prompt 无限膨胀。
+- 流式路径会尽早输出 `answer_chunk`，降低首字节等待感受。
 
-## Custom Tool Integration Approach
+## 自定义工具扩展
 
-Phase 1 public API does not expose tool registration.
+Phase 1 的公开 API 还没有开放自定义工具注册能力。
 
-Current integration point is internal wiring in `agent.go` where `tools.NewRetrievalTool(...)` is passed to `graph.NewReactRunner(...)`. To add custom tools today, extend this wiring in a fork/internal change and keep retrieval tool compatibility.
+当前的扩展点仍然在内部接线：`agent.go` 里会把 `tools.NewRetrievalTool(...)` 传给 `graph.NewReactRunner(...)`。
+
+如果你现在就要加自定义工具，建议在内部 fork / 自定义接线层里扩展，并保持 retrieval tool 的兼容性。

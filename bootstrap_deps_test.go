@@ -1,8 +1,8 @@
 package ragagent
 
-// Test-only bootstrap anchor for Task 1.1 dependencies until concrete usage lands.
-// Note: components/embedding/openai@latest currently resolves to the latest upstream
-// pseudo-version because that module does not publish a tagged release yet.
+// 这是 Task 1.1 的测试期依赖锚点，在真实引用稳定落地前用于保留依赖。
+// 注意：components/embedding/openai@latest 当前会解析到上游最新 pseudo-version，
+// 因为该模块暂时没有发布带 tag 的稳定版本。
 import (
 	_ "github.com/cloudwego/eino-ext/components/embedding/openai"
 	_ "github.com/cloudwego/eino-ext/components/model/openai"

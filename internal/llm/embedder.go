@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// EmbeddingConfig holds construction config for embedding adapters.
+// EmbeddingConfig 保存 embedding 适配器的构造配置。
 type EmbeddingConfig struct {
 	Model   string
 	BaseURL string
@@ -22,7 +22,7 @@ func (c EmbeddingConfig) normalized() EmbeddingConfig {
 	return c
 }
 
-// Validate checks whether the embedding config is complete and valid.
+// Validate 检查 embedding 配置是否完整且有效。
 func (c EmbeddingConfig) Validate() error {
 	c = c.normalized()
 
@@ -44,7 +44,7 @@ func (c EmbeddingConfig) Validate() error {
 	return nil
 }
 
-// Embedder is the abstraction used by upper layers.
+// Embedder 是上层使用的 embedding 抽象接口。
 type Embedder interface {
 	EmbedTexts(ctx context.Context, texts []string) ([][]float32, error)
 }

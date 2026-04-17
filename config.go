@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Config defines the root agent configuration contract for phase 1.
+// Config 定义 Phase 1 根 Agent 的配置契约。
 type Config struct {
 	ChatModel   string
 	ChatBaseURL string
@@ -32,7 +32,7 @@ type Config struct {
 	Callbacks           []Callback
 }
 
-// withDefaults returns a copy of c with phase-1 defaults applied.
+// withDefaults 返回一个应用了 Phase 1 默认值的配置副本。
 func (c Config) withDefaults() Config {
 	c = c.normalized()
 	if c.TopK == 0 {
@@ -67,7 +67,7 @@ func (c Config) normalized() Config {
 	return c
 }
 
-// Validate checks whether c satisfies the phase-1 configuration contract.
+// Validate 检查配置是否满足 Phase 1 的约束。
 func (c Config) Validate() error {
 	c = c.withDefaults()
 

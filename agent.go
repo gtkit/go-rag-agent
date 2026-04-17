@@ -24,7 +24,7 @@ const (
 	maxEvidenceChars      = 4000
 )
 
-// Agent is the root runtime that owns ingestion, retrieval, sessions, and execution wiring.
+// Agent 是根运行时对象，负责知识导入、检索、会话与执行编排。
 type Agent struct {
 	cfg        Config
 	store      storage.VectorStore
@@ -77,7 +77,7 @@ func (r *rootRetriever) Search(ctx context.Context, query string) ([]storage.Sea
 	return hits, nil
 }
 
-// New creates a phase-1 root agent with embedded storage and OpenAI-compatible adapters.
+// New 创建一个 Phase 1 根 Agent，使用嵌入式存储与 OpenAI-compatible 适配器。
 func New(cfg Config) (*Agent, error) {
 	cfg = cfg.withDefaults()
 	if err := cfg.Validate(); err != nil {
@@ -149,7 +149,7 @@ func New(cfg Config) (*Agent, error) {
 	}, nil
 }
 
-// GetSession returns one stable session instance per ID.
+// GetSession 为给定 ID 返回稳定复用的 Session 实例。
 func (a *Agent) GetSession(id string) *Session {
 	if a.isClosed() {
 		return &Session{
@@ -184,7 +184,7 @@ func (a *Agent) GetSession(id string) *Session {
 	return session
 }
 
-// Close releases all sessions and underlying storage resources.
+// Close 释放所有会话以及底层存储资源。
 func (a *Agent) Close() error {
 	if a.callbackDepth.Load() > 0 {
 		return fmt.Errorf("ragagent: agent close from callback is not supported")

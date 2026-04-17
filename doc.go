@@ -1,3 +1,2 @@
-// Package ragagent defines the public contracts for configuring and interacting
-// with a retrieval-augmented generation agent.
+// Package ragagent 定义了检索增强生成 Agent 的公共配置与调用契约。
 package ragagent

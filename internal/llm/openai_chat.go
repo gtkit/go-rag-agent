@@ -7,7 +7,7 @@ import (
 	openai "github.com/cloudwego/eino-ext/components/model/openai"
 )
 
-// NewOpenAIChatModel creates an OpenAI-compatible Eino chat model.
+// NewOpenAIChatModel 创建一个 OpenAI-compatible 的 Eino 聊天模型。
 func NewOpenAIChatModel(ctx context.Context, cfg ChatConfig) (ChatModel, error) {
 	cfg = cfg.normalized()
 	if err := cfg.Validate(); err != nil {

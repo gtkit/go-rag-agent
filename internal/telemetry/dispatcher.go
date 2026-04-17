@@ -2,7 +2,7 @@ package telemetry
 
 import "context"
 
-// Callback defines lifecycle hooks used by the internal telemetry dispatcher.
+// Callback 定义内部 telemetry dispatcher 使用的生命周期回调。
 type Callback interface {
 	OnRetrieveStart(ctx context.Context, query string)
 	OnRetrieveEnd(ctx context.Context, resultCount int, err error)
@@ -12,12 +12,12 @@ type Callback interface {
 	OnModelEnd(ctx context.Context, model string, err error)
 }
 
-// Dispatcher fans telemetry events out to all registered callbacks.
+// Dispatcher 把 telemetry 事件扇出到所有已注册回调。
 type Dispatcher struct {
 	callbacks []Callback
 }
 
-// NewDispatcher creates a dispatcher with a defensive callback copy.
+// NewDispatcher 创建一个带防御性拷贝的 dispatcher。
 func NewDispatcher(callbacks []Callback) Dispatcher {
 	filtered := make([]Callback, 0, len(callbacks))
 	for _, cb := range callbacks {

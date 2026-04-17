@@ -2,7 +2,7 @@ package storage
 
 import "context"
 
-// ChunkRecord is the storage-layer shape for one indexed chunk.
+// ChunkRecord 表示存储层里的一个已索引分块。
 type ChunkRecord struct {
 	ChunkID    string
 	ParentID   string
@@ -15,20 +15,20 @@ type ChunkRecord struct {
 	Embedding  []float32
 }
 
-// SearchHit is one vector search result.
+// SearchHit 表示一次向量检索结果。
 type SearchHit struct {
 	Chunk ChunkRecord
 	Score float32
 }
 
-// VectorStore defines the minimal vector storage contract for the RAG pipeline.
+// VectorStore 定义 RAG 管线所需的最小向量存储契约。
 type VectorStore interface {
 	Upsert(ctx context.Context, chunks []ChunkRecord) error
 	Search(ctx context.Context, queryEmbedding []float32, topK int, threshold float32) ([]SearchHit, error)
 	Close() error
 }
 
-// Config configures the vector store backend.
+// Config 定义向量存储后端配置。
 type Config struct {
 	DataDir    string
 	Collection string

@@ -11,7 +11,7 @@ import (
 	pdf "github.com/ledongthuc/pdf"
 )
 
-// Document is the self-contained RAG-layer source document model.
+// Document 是 RAG 层自包含的源文档模型。
 type Document struct {
 	ID         string
 	SourcePath string
@@ -20,7 +20,7 @@ type Document struct {
 	Content    string
 }
 
-// LoadFile reads a local file as a Document.
+// LoadFile 把本地文件读取为一个 RAG 文档。
 func LoadFile(ctx context.Context, path string, title string, metadata map[string]string) (Document, error) {
 	if err := ctx.Err(); err != nil {
 		return Document{}, err

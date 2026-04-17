@@ -7,12 +7,12 @@ import (
 	openaiembed "github.com/cloudwego/eino-ext/components/embedding/openai"
 )
 
-// OpenAIEmbedder adapts Eino OpenAI embedder to the package Embedder interface.
+// OpenAIEmbedder 将 Eino 的 OpenAI Embedder 适配到当前包的 Embedder 接口。
 type OpenAIEmbedder struct {
 	client *openaiembed.Embedder
 }
 
-// NewOpenAIEmbedder creates an OpenAI-compatible embedding adapter.
+// NewOpenAIEmbedder 创建一个 OpenAI-compatible embedding 适配器。
 func NewOpenAIEmbedder(ctx context.Context, cfg EmbeddingConfig) (Embedder, error) {
 	cfg = cfg.normalized()
 	if err := cfg.Validate(); err != nil {
@@ -32,7 +32,7 @@ func NewOpenAIEmbedder(ctx context.Context, cfg EmbeddingConfig) (Embedder, erro
 	return &OpenAIEmbedder{client: client}, nil
 }
 
-// EmbedTexts embeds texts and converts values to float32 vectors.
+// EmbedTexts 对文本做向量化，并把结果转换为 float32 向量。
 func (e *OpenAIEmbedder) EmbedTexts(ctx context.Context, texts []string) ([][]float32, error) {
 	normalizedTexts, err := normalizeEmbeddingTexts(texts)
 	if err != nil {

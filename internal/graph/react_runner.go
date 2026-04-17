@@ -18,13 +18,13 @@ import (
 
 const defaultMaxIterations = 12
 
-// ReactRunner executes graph ask calls with Eino ReAct.
+// ReactRunner 使用 Eino ReAct 执行 graph 层问答。
 type ReactRunner struct {
 	model llm.ChatModel
 	agent *react.Agent
 }
 
-// NewReactRunner creates a ReAct runner with retrieval tool.
+// NewReactRunner 创建带检索工具的 ReAct runner。
 func NewReactRunner(ctx context.Context, model llm.ChatModel, retrievalTool *tools.RetrievalTool, maxIterations int) (*ReactRunner, error) {
 	if model == nil {
 		return nil, fmt.Errorf("chat model is required")
@@ -35,7 +35,7 @@ func NewReactRunner(ctx context.Context, model llm.ChatModel, retrievalTool *too
 
 	var agentRunner *react.Agent
 	if retrievalTool != nil {
-		// ReAct streaming assumes our current OpenAI-compatible adapters expose tool calls in stream-first chunks.
+		// 这里假设当前 OpenAI-compatible 适配器会在流式输出早期暴露 tool call。
 		agent, err := react.NewAgent(ctx, &react.AgentConfig{
 			ToolCallingModel: model,
 			ToolsConfig: compose.ToolsNodeConfig{
@@ -55,7 +55,7 @@ func NewReactRunner(ctx context.Context, model llm.ChatModel, retrievalTool *too
 	}, nil
 }
 
-// Ask returns the final text answer.
+// Ask 返回最终答案文本。
 func (r *ReactRunner) Ask(ctx context.Context, req Request) (string, error) {
 	msgs := buildPromptMessages(req.History, req.EvidenceText, req.Query)
 	if strings.TrimSpace(req.EvidenceText) != "" {
@@ -76,7 +76,7 @@ func (r *ReactRunner) Ask(ctx context.Context, req Request) (string, error) {
 	return msg.Content, nil
 }
 
-// AskStream emits answer chunks and done event.
+// AskStream 发出答案分块和完成事件。
 func (r *ReactRunner) AskStream(ctx context.Context, req Request, emit StreamEmitter) error {
 	msgs := buildPromptMessages(req.History, req.EvidenceText, req.Query)
 	if strings.TrimSpace(req.EvidenceText) != "" {

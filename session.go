@@ -11,7 +11,7 @@ import (
 	"my-gtkit-package/go-rag-agent/internal/storage"
 )
 
-// Session stores one conversation state bound to an Agent.
+// Session 保存一个绑定到 Agent 的会话状态。
 type Session struct {
 	agent        *Agent
 	id           string
@@ -31,7 +31,7 @@ type Session struct {
 
 var errSessionCallbackReentry = errors.New("ragagent: session callback reentry is not supported")
 
-// Ask executes the synchronous ask pipeline for this session.
+// Ask 执行当前 Session 的同步问答流程。
 func (s *Session) Ask(ctx context.Context, query string) (Answer, error) {
 	if s.isEmittingCallback() {
 		return Answer{}, errSessionCallbackReentry
@@ -61,7 +61,7 @@ func (s *Session) Ask(ctx context.Context, query string) (Answer, error) {
 	return answer, nil
 }
 
-// AskStream executes the streaming ask pipeline for this session.
+// AskStream 执行当前 Session 的流式问答流程。
 func (s *Session) AskStream(ctx context.Context, query string, emit func(StreamEvent) error) error {
 	if s.isEmittingCallback() {
 		return errSessionCallbackReentry
@@ -87,7 +87,7 @@ func (s *Session) AskStream(ctx context.Context, query string, emit func(StreamE
 	return err
 }
 
-// ClearHistory removes all stored turns for this session.
+// ClearHistory 清空当前 Session 的历史对话。
 func (s *Session) ClearHistory(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -106,7 +106,7 @@ func (s *Session) ClearHistory(ctx context.Context) error {
 	return nil
 }
 
-// Close marks this session closed and prevents further asks.
+// Close 将当前 Session 标记为关闭，后续不再接受问答。
 func (s *Session) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -177,7 +177,7 @@ func (s *Session) endExecution(query string, answer string, appendHistory bool) 
 	s.executing = false
 }
 
-// AddKnowledge ingests one source by loading, chunking, embedding, and upserting records.
+// AddKnowledge 导入一个知识源，执行加载、分块、向量化和写入存储。
 func (a *Agent) AddKnowledge(ctx context.Context, src KnowledgeSource) error {
 	if err := a.beginOperation(); err != nil {
 		return err
