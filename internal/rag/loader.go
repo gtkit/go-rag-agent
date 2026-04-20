@@ -106,7 +106,9 @@ func extractPDFText(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("open pdf: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
 	textReader, err := reader.GetPlainText()
 	if err != nil {

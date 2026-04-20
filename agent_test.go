@@ -16,10 +16,13 @@ import (
 	"github.com/jung-kurt/gofpdf"
 
 	"github.com/gtkit/go-rag-agent/internal/graph"
+	"github.com/gtkit/go-rag-agent/internal/llm"
 	"github.com/gtkit/go-rag-agent/internal/memory"
 	"github.com/gtkit/go-rag-agent/internal/rag"
 	"github.com/gtkit/go-rag-agent/internal/storage"
 	"github.com/gtkit/go-rag-agent/internal/telemetry"
+	"github.com/gtkit/go-rag-agent/internal/tools"
+	"github.com/gtkit/go-rag-agent/internal/websearch"
 )
 
 type fakeStore struct {
@@ -222,6 +225,55 @@ type detailedCallbackRecorder struct {
 	fallbacks       []FallbackEvent
 }
 
+type traceRecorderStub struct {
+	mu     sync.Mutex
+	traces []ExecutionTrace
+}
+
+func (r *traceRecorderStub) OnExecutionTrace(_ context.Context, trace ExecutionTrace) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.traces = append(r.traces, trace)
+}
+
+func (r *traceRecorderStub) snapshot() []ExecutionTrace {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.traces)
+}
+
+type loggerEntry struct {
+	level string
+	msg   string
+	kv    []any
+}
+
+type loggerStub struct {
+	mu      sync.Mutex
+	entries []loggerEntry
+}
+
+func (l *loggerStub) Debug(msg string, kv ...any) { l.add("debug", msg, kv...) }
+func (l *loggerStub) Info(msg string, kv ...any)  { l.add("info", msg, kv...) }
+func (l *loggerStub) Warn(msg string, kv ...any)  { l.add("warn", msg, kv...) }
+func (l *loggerStub) Error(msg string, kv ...any) { l.add("error", msg, kv...) }
+
+func (l *loggerStub) add(level string, msg string, kv ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = append(l.entries, loggerEntry{
+		level: level,
+		msg:   msg,
+		kv:    slices.Clone(kv),
+	})
+}
+
+func (l *loggerStub) snapshot() []loggerEntry {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.entries)
+}
+
 func (r *detailedCallbackRecorder) OnRetrieveMetrics(_ context.Context, metrics RetrievalMetrics) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -292,6 +344,446 @@ type blockingSource struct {
 	files   []KnowledgeFile
 }
 
+type fakeTraceChatModel struct {
+	answer string
+}
+
+func (f *fakeTraceChatModel) Generate(_ context.Context, _ []llm.Message) (llm.Message, error) {
+	return llm.Message{
+		Role:    llm.RoleAssistant,
+		Content: f.answer,
+	}, nil
+}
+
+func (f *fakeTraceChatModel) Stream(_ context.Context, _ []llm.Message, emit func(string) error) error {
+	if emit == nil {
+		return nil
+	}
+	return emit(f.answer)
+}
+
+type fakeSearcher struct {
+	results []websearch.Result
+	err     error
+}
+
+func (f *fakeSearcher) Search(context.Context, string) ([]websearch.Result, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return slices.Clone(f.results), nil
+}
+
+type injectedVectorStoreStub struct {
+	mu          sync.Mutex
+	upsertCalls int
+	searchCalls int
+	searchHits  []SearchHit
+}
+
+func (s *injectedVectorStoreStub) Upsert(context.Context, []ChunkRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.upsertCalls++
+	return nil
+}
+
+func (s *injectedVectorStoreStub) Search(context.Context, []float32, int, float32) ([]SearchHit, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.searchCalls++
+	return slices.Clone(s.searchHits), nil
+}
+
+func (s *injectedVectorStoreStub) SearchWithFilter(context.Context, []float32, int, float32, SearchFilter) ([]SearchHit, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.searchCalls++
+	return slices.Clone(s.searchHits), nil
+}
+
+func (s *injectedVectorStoreStub) DeleteBySourcePaths(context.Context, []string) error { return nil }
+
+func (s *injectedVectorStoreStub) Close() error { return nil }
+
+func (s *injectedVectorStoreStub) snapshot() (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.upsertCalls, s.searchCalls
+}
+
+type injectedDocumentLoaderStub struct {
+	mu     sync.Mutex
+	called bool
+}
+
+func (l *injectedDocumentLoaderStub) Load(context.Context, string, string, map[string]string, DocumentLoadOptions) (Document, error) {
+	l.mu.Lock()
+	l.called = true
+	l.mu.Unlock()
+	return Document{
+		ID:         "doc",
+		SourcePath: "/tmp/doc.md",
+		Title:      "doc",
+		Metadata:   map[string]string{"tag": "api"},
+		Content:    "gateway api exact match",
+	}, nil
+}
+
+func (l *injectedDocumentLoaderStub) wasCalled() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.called
+}
+
+type injectedRerankerStub struct {
+	mu     sync.Mutex
+	called bool
+}
+
+func (r *injectedRerankerStub) Rerank(context.Context, string, []SearchHit, RerankOptions) ([]SearchHit, error) {
+	r.mu.Lock()
+	r.called = true
+	r.mu.Unlock()
+	return []SearchHit{
+		{
+			Chunk: ChunkRecord{
+				ChunkID:    "doc:0",
+				ParentID:   "doc",
+				SourcePath: "/tmp/doc.md",
+				Title:      "doc",
+				Text:       "gateway api exact match",
+				StartRune:  0,
+				EndRune:    23,
+			},
+			Score: 1,
+		},
+	}, nil
+}
+
+func (r *injectedRerankerStub) wasCalled() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.called
+}
+
+func TestStorageBoundaryTypesCompile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "root vector store interface accepts store stub",
+			run: func(t *testing.T) {
+				t.Helper()
+				var store VectorStore = stubStorageVectorStore{}
+				if err := store.Close(); err != nil {
+					t.Fatalf("store.Close() error = %v", err)
+				}
+			},
+		},
+		{
+			name: "root document loader interface accepts loader stub",
+			run: func(t *testing.T) {
+				t.Helper()
+				var loader DocumentLoader = stubStorageDocumentLoader{}
+				doc, err := loader.Load(context.Background(), "/tmp/doc.md", "Doc", nil, DocumentLoadOptions{})
+				if err != nil {
+					t.Fatalf("loader.Load() error = %v", err)
+				}
+				if doc.ID != "" || doc.SourcePath != "" || doc.Title != "" || len(doc.Metadata) != 0 || doc.Content != "" {
+					t.Fatalf("loader.Load() doc = %#v, want zero document", doc)
+				}
+			},
+		},
+		{
+			name: "root reranker interface accepts reranker stub",
+			run: func(t *testing.T) {
+				t.Helper()
+				var reranker Reranker = stubStorageReranker{}
+				hits, err := reranker.Rerank(context.Background(), "q", nil, RerankOptions{})
+				if err != nil {
+					t.Fatalf("reranker.Rerank() error = %v", err)
+				}
+				if hits != nil {
+					t.Fatalf("reranker.Rerank() hits = %#v, want nil", hits)
+				}
+			},
+		},
+		{
+			name: "root types are constructible",
+			run: func(t *testing.T) {
+				t.Helper()
+				doc := Document{
+					ID:         "doc",
+					SourcePath: "/tmp/doc.md",
+					Title:      "Doc",
+					Metadata:   map[string]string{"tag": "api"},
+					Content:    "body",
+				}
+				chunk := Chunk{
+					ChunkID:    "doc:0",
+					ParentID:   "doc",
+					SourcePath: doc.SourcePath,
+					Title:      doc.Title,
+					Metadata:   maps.Clone(doc.Metadata),
+					Text:       doc.Content,
+					StartRune:  0,
+					EndRune:    4,
+				}
+				hit := SearchHit{
+					Chunk: ChunkRecord{
+						ChunkID:    chunk.ChunkID,
+						ParentID:   chunk.ParentID,
+						SourcePath: chunk.SourcePath,
+						Title:      chunk.Title,
+						Text:       chunk.Text,
+						StartRune:  chunk.StartRune,
+						EndRune:    chunk.EndRune,
+						Metadata:   maps.Clone(chunk.Metadata),
+						Embedding:  []float32{1, 0},
+					},
+					Score: 0.99,
+				}
+				filter := SearchFilter{
+					SourcePaths:    []string{doc.SourcePath},
+					SourcePrefixes: []string{"/tmp"},
+					Metadata:       map[string]string{"tag": "api"},
+				}
+				loadOpts := DocumentLoadOptions{}
+				rerankOpts := RerankOptions{ShortlistSize: 4, TopK: 2}
+
+				if hit.Chunk.SourcePath != filter.SourcePaths[0] {
+					t.Fatalf("hit.Chunk.SourcePath = %q, want %q", hit.Chunk.SourcePath, filter.SourcePaths[0])
+				}
+				if loadOpts.MinDirectTextRunes != 0 {
+					t.Fatalf("loadOpts.MinDirectTextRunes = %d, want 0", loadOpts.MinDirectTextRunes)
+				}
+				if rerankOpts.TopK != 2 {
+					t.Fatalf("rerankOpts.TopK = %d, want 2", rerankOpts.TopK)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.run(t)
+		})
+	}
+}
+
+func TestDefaultStorageAdapters(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "chromem vector store constructor returns usable store",
+			run: func(t *testing.T) {
+				t.Helper()
+
+				store, err := NewChromemVectorStore(ChromemVectorStoreConfig{})
+				if err != nil {
+					t.Fatalf("NewChromemVectorStore() error = %v", err)
+				}
+				t.Cleanup(func() {
+					if cerr := store.Close(); cerr != nil {
+						t.Fatalf("Close() error = %v", cerr)
+					}
+				})
+
+				err = store.Upsert(context.Background(), []ChunkRecord{
+					{
+						ChunkID:    "doc:0",
+						ParentID:   "doc",
+						SourcePath: "/tmp/doc.md",
+						Title:      "Doc",
+						Text:       "hello world",
+						StartRune:  0,
+						EndRune:    11,
+						Embedding:  []float32{1, 0},
+					},
+				})
+				if err != nil {
+					t.Fatalf("Upsert() error = %v", err)
+				}
+
+				hits, err := store.Search(context.Background(), []float32{1, 0}, 1, 0)
+				if err != nil {
+					t.Fatalf("Search() error = %v", err)
+				}
+				if len(hits) != 1 {
+					t.Fatalf("Search() len = %d, want 1", len(hits))
+				}
+			},
+		},
+		{
+			name: "file document loader preserves markdown metadata behavior",
+			run: func(t *testing.T) {
+				t.Helper()
+
+				root := t.TempDir()
+				path := filepath.Join(root, "doc.md")
+				if err := os.WriteFile(path, []byte("---\ntag: api\nlang: en\n---\nbody"), 0o600); err != nil {
+					t.Fatalf("WriteFile(%q) error = %v", path, err)
+				}
+
+				loader := NewFileDocumentLoader()
+				doc, err := loader.Load(context.Background(), path, "Doc", map[string]string{"source": "test"}, DocumentLoadOptions{})
+				if err != nil {
+					t.Fatalf("Load() error = %v", err)
+				}
+				if doc.Metadata["tag"] != "api" {
+					t.Fatalf("doc.Metadata[tag] = %q, want %q", doc.Metadata["tag"], "api")
+				}
+				if doc.Metadata["source"] != "test" {
+					t.Fatalf("doc.Metadata[source] = %q, want %q", doc.Metadata["source"], "test")
+				}
+				if doc.Content != "body" {
+					t.Fatalf("doc.Content = %q, want %q", doc.Content, "body")
+				}
+			},
+		},
+		{
+			name: "rule based reranker reorders shortlist",
+			run: func(t *testing.T) {
+				t.Helper()
+
+				reranker := NewRuleBasedReranker()
+				got, err := reranker.Rerank(context.Background(), "gateway api", []SearchHit{
+					{
+						Chunk: ChunkRecord{
+							ChunkID: "a",
+							Title:   "Overview",
+							Text:    "semantic only",
+						},
+						Score: 0.99,
+					},
+					{
+						Chunk: ChunkRecord{
+							ChunkID: "b",
+							Title:   "Gateway API",
+							Text:    "gateway api exact match",
+						},
+						Score: 0.80,
+					},
+				}, RerankOptions{
+					ShortlistSize: 2,
+					TopK:          1,
+				})
+				if err != nil {
+					t.Fatalf("Rerank() error = %v", err)
+				}
+				if len(got) != 1 {
+					t.Fatalf("Rerank() len = %d, want 1", len(got))
+				}
+				if got[0].Chunk.ChunkID != "b" {
+					t.Fatalf("Rerank() top id = %q, want %q", got[0].Chunk.ChunkID, "b")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.run(t)
+		})
+	}
+}
+
+func TestAgentUsesInjectedStorageComponents(t *testing.T) {
+	t.Parallel()
+
+	store := &injectedVectorStoreStub{
+		searchHits: []SearchHit{
+			{
+				Chunk: ChunkRecord{
+					ChunkID:    "doc:0",
+					ParentID:   "doc",
+					SourcePath: "/tmp/doc.md",
+					Title:      "Doc",
+					Text:       "gateway api exact match",
+					StartRune:  0,
+					EndRune:    23,
+				},
+				Score: 0.99,
+			},
+		},
+	}
+	loader := &injectedDocumentLoaderStub{}
+	reranker := &injectedRerankerStub{}
+
+	agent, err := New(Config{
+		Runtime: RuntimeComponents{
+			ChatModel: stubRuntimeChatModel{},
+			Embedder:  stubRuntimeEmbedder{},
+		},
+		Storage: StorageComponents{
+			VectorStore:    store,
+			DocumentLoader: loader,
+			Reranker:       reranker,
+		},
+		TopK:                      1,
+		ChunkSize:                 32,
+		ChunkOverlap:              0,
+		MaxHistoryRounds:          8,
+		RequestTimeout:            time.Second,
+		EnableHybridSearch:        true,
+		EnableRerank:              true,
+		HybridRRFK:                60,
+		HybridCandidateMultiplier: 1,
+		RerankShortlistMultiplier: 1,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := agent.Close(); cerr != nil {
+			t.Fatalf("Close() error = %v", cerr)
+		}
+	})
+
+	root := t.TempDir()
+	path := filepath.Join(root, "knowledge.md")
+	if err := os.WriteFile(path, []byte("ignored by injected loader"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", path, err)
+	}
+
+	if err := agent.AddKnowledge(context.Background(), FileSource(path)); err != nil {
+		t.Fatalf("AddKnowledge() error = %v", err)
+	}
+	answer, err := agent.GetSession("injected-storage").Ask(context.Background(), "gateway api")
+	if err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+	if answer.Text == "" {
+		t.Fatal("Ask() returned empty text")
+	}
+
+	upsertCalls, searchCalls := store.snapshot()
+	if upsertCalls == 0 {
+		t.Fatal("injected vector store Upsert() was not called")
+	}
+	if searchCalls == 0 {
+		t.Fatal("injected vector store SearchWithFilter() was not called")
+	}
+	if !loader.wasCalled() {
+		t.Fatal("injected document loader was not called")
+	}
+	if !reranker.wasCalled() {
+		t.Fatal("injected reranker was not called")
+	}
+}
+
 type cleanupSource struct {
 	closed bool
 }
@@ -347,6 +839,169 @@ func TestGetSessionReusesSameID(t *testing.T) {
 				t.Fatal("GetSession() should return the same session for the same id")
 			}
 		})
+	}
+}
+
+func TestSessionAskExecutionTrace(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		runnerErr       error
+		wantErr         error
+		wantAnswerTrace bool
+		wantTraceErr    bool
+	}{
+		{
+			name:            "successful ask returns trace and records it",
+			runnerErr:       nil,
+			wantErr:         nil,
+			wantAnswerTrace: true,
+			wantTraceErr:    false,
+		},
+		{
+			name:            "failed ask still records trace",
+			runnerErr:       errors.New("runner boom"),
+			wantErr:         errors.New("runner boom"),
+			wantAnswerTrace: false,
+			wantTraceErr:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := &fakeStore{
+				searchHits: []storage.SearchHit{
+					{
+						Chunk: storage.ChunkRecord{
+							ChunkID:    "doc:0",
+							SourcePath: "/tmp/doc.md",
+							Title:      "doc",
+							Text:       "retrieved evidence for trace",
+							StartRune:  0,
+							EndRune:    28,
+						},
+						Score: 0.99,
+					},
+				},
+			}
+			embedder := &fakeEmbedder{defaultVec: []float32{1, 2, 3}}
+			runner := &fakeRunner{
+				answer: "answer text",
+				err:    tc.runnerErr,
+			}
+			recorder := &traceRecorderStub{}
+			logger := &loggerStub{}
+			a := &Agent{
+				cfg: Config{
+					ChatModel:           "trace-model",
+					TopK:                5,
+					SimilarityThreshold: 0.5,
+					MaxHistoryRounds:    8,
+					Logger:              logger,
+					TraceRecorder:       recorder,
+				},
+				store:    store,
+				embedder: embedder,
+				runner:   runner,
+				sessions: make(map[string]*Session),
+			}
+
+			answer, err := a.GetSession("trace-sync").Ask(context.Background(), "what is trace?")
+			if tc.wantErr != nil {
+				if !containsErr(err, tc.wantErr) {
+					t.Fatalf("Ask() error = %v, want contains %v", err, tc.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("Ask() error = %v", err)
+			}
+
+			if tc.wantAnswerTrace {
+				if answer.Trace == nil {
+					t.Fatal("Answer.Trace = nil, want non-nil")
+				}
+				if answer.Trace.RewrittenQuery != "what is trace?" {
+					t.Fatalf("Answer.Trace.RewrittenQuery = %q, want %q", answer.Trace.RewrittenQuery, "what is trace?")
+				}
+				if answer.Trace.Retrieval.FinalHitCount != 1 {
+					t.Fatalf("Answer.Trace.Retrieval.FinalHitCount = %d, want %d", answer.Trace.Retrieval.FinalHitCount, 1)
+				}
+				if answer.Trace.Model.OutputChars != len("answer text") {
+					t.Fatalf("Answer.Trace.Model.OutputChars = %d, want %d", answer.Trace.Model.OutputChars, len("answer text"))
+				}
+			}
+
+			recorded := recorder.snapshot()
+			if len(recorded) != 1 {
+				t.Fatalf("recorded traces len = %d, want %d", len(recorded), 1)
+			}
+			if recorded[0].Success == tc.wantTraceErr {
+				t.Fatalf("recorded trace success = %v, want inverse of wantTraceErr=%v", recorded[0].Success, tc.wantTraceErr)
+			}
+			if tc.wantTraceErr && recorded[0].Err == nil {
+				t.Fatal("recorded trace Err = nil, want non-nil")
+			}
+			if !tc.wantTraceErr && recorded[0].Err != nil {
+				t.Fatalf("recorded trace Err = %v, want nil", recorded[0].Err)
+			}
+
+			logs := logger.snapshot()
+			if len(logs) == 0 {
+				t.Fatal("logger entries = 0, want at least one summary log")
+			}
+		})
+	}
+}
+
+func TestAskExecutionTraceCapturesWebSearchTool(t *testing.T) {
+	t.Parallel()
+
+	runner, err := graph.NewChatRunner(
+		&fakeTraceChatModel{answer: "web-backed answer"},
+		tools.NewWebSearchTool(&fakeSearcher{
+			results: []websearch.Result{
+				{
+					Title:   "fresh result",
+					URL:     "https://example.com/fresh",
+					Content: "latest web evidence",
+				},
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewChatRunner() error = %v", err)
+	}
+
+	a := &Agent{
+		cfg: Config{
+			TopK:                5,
+			SimilarityThreshold: 0.5,
+			MaxHistoryRounds:    8,
+			EnableWebSearch:     true,
+		},
+		store:    &fakeStore{searchHits: nil},
+		embedder: &fakeEmbedder{defaultVec: []float32{1, 0}},
+		runner:   runner,
+		sessions: make(map[string]*Session),
+	}
+
+	answer, err := a.GetSession("trace-web").Ask(context.Background(), "latest news")
+	if err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+	if answer.Trace == nil {
+		t.Fatal("Answer.Trace = nil, want non-nil")
+	}
+
+	toolNames := make([]string, 0, len(answer.Trace.ToolCalls))
+	for _, toolCall := range answer.Trace.ToolCalls {
+		toolNames = append(toolNames, toolCall.Name)
+	}
+	if !slices.Contains(toolNames, "search_web") {
+		t.Fatalf("trace tool names = %v, want contains %q", toolNames, "search_web")
 	}
 }
 
@@ -1356,9 +2011,9 @@ func TestAskRetrievalCallbackOrder(t *testing.T) {
 			t.Fatalf("missing callback event %q in %v", event, events)
 		}
 	}
-	if !(pos["retrieve_start"] < pos["tool_start"] &&
-		pos["tool_start"] < pos["retrieve_end"] &&
-		pos["retrieve_end"] < pos["tool_end"]) {
+	if pos["retrieve_start"] >= pos["tool_start"] ||
+		pos["tool_start"] >= pos["retrieve_end"] ||
+		pos["retrieve_end"] >= pos["tool_end"] {
 		t.Fatalf("unexpected callback order: %v", events)
 	}
 }

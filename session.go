@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/gtkit/go-rag-agent/internal/memory"
-	"github.com/gtkit/go-rag-agent/internal/rag"
 	"github.com/gtkit/go-rag-agent/internal/storage"
 )
 
@@ -201,7 +200,9 @@ func (a *Agent) AddKnowledge(ctx context.Context, src KnowledgeSource) error {
 		return fmt.Errorf("knowledge source is nil: %w", ErrUnsupportedSource)
 	}
 	if closer, ok := src.(interface{ Close() error }); ok {
-		defer closer.Close()
+		defer func() {
+			_ = closer.Close()
+		}()
 	}
 
 	files, err := src.Resolve(ctx)
@@ -211,15 +212,19 @@ func (a *Agent) AddKnowledge(ctx context.Context, src KnowledgeSource) error {
 
 	records := make([]storage.ChunkRecord, 0)
 	currentSourcePaths := make([]string, 0, len(files))
+	loader := a.loader
+	if loader == nil {
+		loader = NewFileDocumentLoader()
+	}
 	for _, file := range files {
 		currentSourcePaths = append(currentSourcePaths, file.Path)
 
-		doc, err := rag.LoadFile(ctx, file.Path, file.Title, file.Metadata, a.loaderOptions())
+		doc, err := loader.Load(ctx, file.Path, file.Title, file.Metadata, a.documentLoadOptions())
 		if err != nil {
 			return fmt.Errorf("load knowledge file %q: %w", file.Path, err)
 		}
 
-		chunks := a.chunker.Split(doc)
+		chunks := a.chunker.Split(toInternalDocument(doc))
 		if len(chunks) == 0 {
 			continue
 		}
@@ -294,8 +299,8 @@ func knowledgeDirectoryRoot(src KnowledgeSource) (string, bool) {
 	}
 }
 
-func (a *Agent) loaderOptions() rag.LoadOptions {
-	return rag.LoadOptions{
+func (a *Agent) documentLoadOptions() DocumentLoadOptions {
+	return DocumentLoadOptions{
 		PDFOCR:             a.cfg.PDFOCRBridge.extractor(),
 		MinDirectTextRunes: a.cfg.PDFOCRBridge.MinDirectTextRunes,
 	}

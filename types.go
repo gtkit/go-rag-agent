@@ -111,6 +111,7 @@ type Citation struct {
 type Answer struct {
 	Text      string
 	Citations []Citation
+	Trace     *ExecutionTrace
 }
 
 // RetrievalFilter 定义单次问答检索阶段的过滤条件。
@@ -132,6 +133,7 @@ type StreamEvent struct {
 	ToolName  string
 	Step      int
 	Citation  *Citation
+	Trace     *ExecutionTrace
 	Err       error
 	Timestamp time.Time
 }

@@ -90,7 +90,17 @@ func (r *ChatRunner) messagesForRequest(ctx context.Context, req Request) ([]llm
 		return nil, fmt.Errorf("web search tool is required when evidence text is empty")
 	}
 
+	if req.ToolObserver != nil {
+		if err := req.ToolObserver.OnToolStart(ctx, r.webTool.Name()); err != nil {
+			return nil, fmt.Errorf("observe web search tool start: %w", err)
+		}
+	}
 	webResult, err := r.webTool.Run(ctx, req.Query)
+	if req.ToolObserver != nil {
+		if endErr := req.ToolObserver.OnToolEnd(ctx, r.webTool.Name(), err); endErr != nil {
+			return nil, fmt.Errorf("observe web search tool end: %w", endErr)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("run web search tool: %w", err)
 	}

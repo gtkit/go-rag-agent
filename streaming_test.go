@@ -199,6 +199,104 @@ func TestSessionAskStreamSequenceAndRetrievalOwnership(t *testing.T) {
 	}
 }
 
+func TestSessionAskStreamDoneCarriesExecutionTrace(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		streamEvents   []graph.Event
+		wantAnswerText string
+	}{
+		{
+			name: "done event includes execution trace",
+			streamEvents: []graph.Event{
+				{Type: graph.EventAnswerChunk, Content: "hello ", Step: 1},
+				{Type: graph.EventAnswerChunk, Content: "trace", Step: 2},
+				{Type: graph.EventDone, Step: 2},
+			},
+			wantAnswerText: "hello trace",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := &fakeStore{
+				searchHits: []storage.SearchHit{
+					{
+						Chunk: storage.ChunkRecord{
+							ChunkID:    "doc:0",
+							SourcePath: "/tmp/doc.md",
+							Title:      "doc",
+							Text:       "streaming evidence",
+							StartRune:  0,
+							EndRune:    18,
+						},
+						Score: 0.98,
+					},
+				},
+			}
+			embedder := &fakeEmbedder{defaultVec: []float32{1, 2, 3}}
+			runner := &fakeStreamingRunner{
+				askStreamFn: func(_ context.Context, _ graph.Request, emit graph.StreamEmitter) error {
+					for _, event := range tc.streamEvents {
+						if err := emit(event); err != nil {
+							return err
+						}
+					}
+					return nil
+				},
+			}
+			a := &Agent{
+				cfg: Config{
+					ChatModel:           "trace-stream-model",
+					TopK:                5,
+					SimilarityThreshold: 0.5,
+					MaxHistoryRounds:    8,
+				},
+				store:    store,
+				embedder: embedder,
+				runner:   runner,
+				sessions: make(map[string]*Session),
+			}
+
+			var (
+				gotDoneTrace *ExecutionTrace
+				gotChunks    strings.Builder
+			)
+			err := a.GetSession("trace-stream").AskStream(context.Background(), "show stream trace", func(event StreamEvent) error {
+				switch event.Type {
+				case EventAnswerChunk:
+					gotChunks.WriteString(event.Content)
+				case EventDone:
+					gotDoneTrace = event.Trace
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("AskStream() error = %v", err)
+			}
+			if gotChunks.String() != tc.wantAnswerText {
+				t.Fatalf("streamed answer = %q, want %q", gotChunks.String(), tc.wantAnswerText)
+			}
+			if gotDoneTrace == nil {
+				t.Fatal("done trace = nil, want non-nil")
+			}
+			if gotDoneTrace.Stream != true {
+				t.Fatalf("done trace Stream = %v, want true", gotDoneTrace.Stream)
+			}
+			if gotDoneTrace.Model.OutputChars != len(tc.wantAnswerText) {
+				t.Fatalf("done trace model output chars = %d, want %d", gotDoneTrace.Model.OutputChars, len(tc.wantAnswerText))
+			}
+			if gotDoneTrace.Retrieval.FinalHitCount != 1 {
+				t.Fatalf("done trace retrieval final hit count = %d, want %d", gotDoneTrace.Retrieval.FinalHitCount, 1)
+			}
+		})
+	}
+}
+
 func TestSessionAskStreamRunnerFailureEmitsErrorAndModelTelemetry(t *testing.T) {
 	t.Parallel()
 
@@ -290,7 +388,7 @@ func TestSessionAskStreamRunnerFailureEmitsErrorAndModelTelemetry(t *testing.T) 
 					t.Fatalf("missing telemetry %q in %v", must, telemetryEvents)
 				}
 			}
-			if !(pos["model_start"] < pos["model_end"]) {
+			if pos["model_start"] >= pos["model_end"] {
 				t.Fatalf("model telemetry order invalid: %v", telemetryEvents)
 			}
 		})

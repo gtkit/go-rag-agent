@@ -2,10 +2,18 @@ package ragagent
 
 import (
 	"fmt"
-	"github.com/gtkit/go-rag-agent/internal/llm"
 	"strings"
 	"time"
+
+	"github.com/gtkit/go-rag-agent/internal/llm"
 )
+
+// StorageComponents 定义向量存储、文档加载和 rerank 的可选注入组件。
+type StorageComponents struct {
+	VectorStore    VectorStore
+	DocumentLoader DocumentLoader
+	Reranker       Reranker
+}
 
 // Config 定义 Phase 1 根 Agent 的配置契约。
 type Config struct {
@@ -32,9 +40,12 @@ type Config struct {
 	HybridCandidateMultiplier int
 	HybridRRFK                float64
 	RerankShortlistMultiplier int
+	Runtime                   RuntimeComponents
+	Storage                   StorageComponents
 	PDFOCRBridge              PDFOCRBridgeConfig
 	WebSearch                 WebSearchConfig
 	Logger                    Logger
+	TraceRecorder             TraceRecorder
 	Callbacks                 []Callback
 }
 
@@ -88,21 +99,25 @@ func (c Config) normalized() Config {
 func (c Config) Validate() error {
 	c = c.withDefaults()
 
-	if err := (llm.ChatConfig{
-		Model:   c.ChatModel,
-		BaseURL: c.ChatBaseURL,
-		APIKey:  c.ChatAPIKey,
-		Timeout: c.RequestTimeout,
-	}).Validate(); err != nil {
-		return fmt.Errorf("chat config is invalid: %w: %w", err, ErrInvalidConfig)
+	if c.Runtime.ChatModel == nil {
+		if err := (llm.ChatConfig{
+			Model:   c.ChatModel,
+			BaseURL: c.ChatBaseURL,
+			APIKey:  c.ChatAPIKey,
+			Timeout: c.RequestTimeout,
+		}).Validate(); err != nil {
+			return fmt.Errorf("chat config is invalid: %w: %w", err, ErrInvalidConfig)
+		}
 	}
-	if err := (llm.EmbeddingConfig{
-		Model:   c.EmbeddingModel,
-		BaseURL: firstNonEmpty(c.EmbeddingBaseURL, c.ChatBaseURL),
-		APIKey:  firstNonEmpty(c.EmbeddingAPIKey, c.ChatAPIKey),
-		Timeout: c.RequestTimeout,
-	}).Validate(); err != nil {
-		return fmt.Errorf("embedding config is invalid: %w: %w", err, ErrInvalidConfig)
+	if c.Runtime.Embedder == nil {
+		if err := (llm.EmbeddingConfig{
+			Model:   c.EmbeddingModel,
+			BaseURL: firstNonEmpty(c.EmbeddingBaseURL, c.ChatBaseURL),
+			APIKey:  firstNonEmpty(c.EmbeddingAPIKey, c.ChatAPIKey),
+			Timeout: c.RequestTimeout,
+		}).Validate(); err != nil {
+			return fmt.Errorf("embedding config is invalid: %w: %w", err, ErrInvalidConfig)
+		}
 	}
 	if c.RequestTimeout <= 0 {
 		return fmt.Errorf("request timeout must be positive: %w", ErrInvalidConfig)

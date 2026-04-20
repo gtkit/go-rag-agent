@@ -1,10 +1,62 @@
 package ragagent
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 )
+
+type stubRuntimeChatModel struct{}
+
+func (stubRuntimeChatModel) Generate(context.Context, []Message) (Message, error) {
+	return Message{Role: RoleAssistant, Content: "ok"}, nil
+}
+
+func (stubRuntimeChatModel) Stream(_ context.Context, _ []Message, emit func(string) error) error {
+	if emit == nil {
+		return nil
+	}
+	return emit("ok")
+}
+
+type stubRuntimeEmbedder struct{}
+
+func (stubRuntimeEmbedder) EmbedTexts(_ context.Context, texts []string) ([][]float32, error) {
+	rows := make([][]float32, 0, len(texts))
+	for range texts {
+		rows = append(rows, []float32{1})
+	}
+	return rows, nil
+}
+
+type stubStorageVectorStore struct{}
+
+func (stubStorageVectorStore) Upsert(context.Context, []ChunkRecord) error { return nil }
+
+func (stubStorageVectorStore) Search(context.Context, []float32, int, float32) ([]SearchHit, error) {
+	return nil, nil
+}
+
+func (stubStorageVectorStore) SearchWithFilter(context.Context, []float32, int, float32, SearchFilter) ([]SearchHit, error) {
+	return nil, nil
+}
+
+func (stubStorageVectorStore) DeleteBySourcePaths(context.Context, []string) error { return nil }
+
+func (stubStorageVectorStore) Close() error { return nil }
+
+type stubStorageDocumentLoader struct{}
+
+func (stubStorageDocumentLoader) Load(context.Context, string, string, map[string]string, DocumentLoadOptions) (Document, error) {
+	return Document{}, nil
+}
+
+type stubStorageReranker struct{}
+
+func (stubStorageReranker) Rerank(context.Context, string, []SearchHit, RerankOptions) ([]SearchHit, error) {
+	return nil, nil
+}
 
 func TestConfigValidate(t *testing.T) {
 	t.Parallel()
@@ -229,6 +281,107 @@ func TestConfigValidate(t *testing.T) {
 				return
 			}
 			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Validate() error = %v, want errors.Is(..., %v)", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestConfigValidateRuntimeComponents(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr error
+	}{
+		{
+			name: "fully injected runtime skips default provider validation",
+			cfg: Config{
+				Runtime: RuntimeComponents{
+					ChatModel: stubRuntimeChatModel{},
+					Embedder:  stubRuntimeEmbedder{},
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "mixed runtime keeps default chat validation path",
+			cfg: Config{
+				ChatModel:   "gpt-4.1-mini",
+				ChatBaseURL: "https://api.example.com/v1",
+				ChatAPIKey:  "test-key",
+				Runtime: RuntimeComponents{
+					Embedder: stubRuntimeEmbedder{},
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "missing default chat config still fails when chat runtime not injected",
+			cfg: Config{
+				Runtime: RuntimeComponents{
+					Embedder: stubRuntimeEmbedder{},
+				},
+			},
+			wantErr: ErrInvalidConfig,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tc.cfg.Validate()
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("Validate() unexpected error = %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Validate() error = %v, want errors.Is(..., %v)", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestConfigValidateStorageComponents(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr error
+	}{
+		{
+			name: "all storage components injected",
+			cfg: Config{
+				ChatModel:      "gpt-4.1-mini",
+				ChatBaseURL:    "https://api.example.com/v1",
+				ChatAPIKey:     "test-key",
+				EmbeddingModel: "text-embedding-3-small",
+				Storage: StorageComponents{
+					VectorStore:    stubStorageVectorStore{},
+					DocumentLoader: stubStorageDocumentLoader{},
+					Reranker:       stubStorageReranker{},
+				},
+			},
+			wantErr: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tc.cfg.Validate()
+			if tc.wantErr == nil && err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
 				t.Fatalf("Validate() error = %v, want errors.Is(..., %v)", err, tc.wantErr)
 			}
 		})

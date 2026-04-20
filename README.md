@@ -5,6 +5,8 @@
 - chromem 向量检索
 - 会话记忆
 - OpenAI-compatible 聊天 / embedding 适配
+- 可注入的 runtime 组件边界
+- 单次执行结构化 trace
 
 ## 安装
 
@@ -82,6 +84,7 @@ func main() {
 ## 配置说明
 
 必填项：
+默认 provider 路径下必填：
 - `ChatModel`
 - `ChatBaseURL`
 - `ChatAPIKey`
@@ -99,9 +102,20 @@ func main() {
 - `HybridCandidateMultiplier`（默认 `4`）
 - `HybridRRFK`（默认 `60`）
 - `RerankShortlistMultiplier`（默认 `2`）
+- `Runtime`
+  说明：可选 runtime 注入；支持注入 `ChatModel`、`Embedder`
+- `Storage`
+  说明：可选存储/加载/rerank 注入；支持注入 `VectorStore`、`DocumentLoader`、`Reranker`
+- `TraceRecorder`
+  说明：可选单次执行 trace sink
+- `Logger`
+  说明：可选日志实例；只要实现 `Debug/Info/Warn/Error(msg string, kv ...any)` 即可
 
 校验说明：
 - 空 `DataDir` 表示使用内存模式，不会强制写入当前目录。
+- 当 `Runtime.ChatModel` 已注入时，默认聊天 provider 配置可省略。
+- 当 `Runtime.Embedder` 已注入时，默认 embedding provider 配置可省略。
+- 当 `Storage` 里某个组件已注入时，该组件会覆盖默认 adapter；未注入部分继续使用默认实现。
 - `SimilarityThreshold: 0` 会保留非负相似度结果；如果你希望连负相似度结果也保留，需要传负值。
 - `ChunkSize` 必须不超过当前证据拼装预算（`<= 4000` rune）。
 - `ChunkOverlap` 必须满足 `>= 0` 且 `< ChunkSize`。
@@ -112,6 +126,94 @@ func main() {
 - `RerankShortlistMultiplier` 必须是正数。
 - `MaxToolCalls` 目前在 Phase 1 里保留字段，但还没有真正接入运行时控制。
 - `PDFOCRBridge` 只有在你要导入扫描版 PDF 时才需要配置；如果配置了，`Args` 必须同时包含 `{input}` 和 `{output}` 占位符。
+
+## 自定义 runtime 注入
+
+如果你不想直接使用库内默认的 OpenAI-compatible runtime，可以通过 `Config.Runtime` 注入自定义组件。
+
+库同时公开了默认构造器：
+- `NewOpenAIChatModel(ctx, cfg)`
+- `NewOpenAIEmbedder(ctx, cfg)`
+
+你可以选择三种接线方式：
+- 全部使用默认 runtime
+- 全部注入自定义 runtime
+- 部分注入，其余部分继续走默认构造
+
+示例：
+
+```go
+chatModel, err := ragagent.NewOpenAIChatModel(ctx, ragagent.ChatModelConfig{
+	Model:   "gpt-4o-mini",
+	BaseURL: "https://api.openai.example/v1",
+	APIKey:  "replace-with-your-chat-key",
+	Timeout: 20 * time.Second,
+})
+if err != nil {
+	log.Fatalf("new chat model: %v", err)
+}
+
+embedder, err := ragagent.NewOpenAIEmbedder(ctx, ragagent.EmbedderConfig{
+	Model:   "text-embedding-3-small",
+	BaseURL: "https://api.openai.example/v1",
+	APIKey:  "replace-with-your-embedding-key",
+	Timeout: 20 * time.Second,
+})
+if err != nil {
+	log.Fatalf("new embedder: %v", err)
+}
+
+cfg := ragagent.Config{
+	Runtime: ragagent.RuntimeComponents{
+		ChatModel: chatModel,
+		Embedder:  embedder,
+	},
+}
+```
+
+如果你有自己的 provider 抽象层，只要实现根包公开的 `ChatModel` / `Embedder` 接口即可。
+
+## 存储、加载与重排边界
+
+当前库也支持通过 `Config.Storage` 注入存储、文档加载和 rerank 组件：
+
+- `VectorStore`
+- `DocumentLoader`
+- `Reranker`
+
+默认不传时分别使用：
+- `NewChromemVectorStore(...)`
+- `NewFileDocumentLoader()`
+- `NewRuleBasedReranker()`
+
+这样可以只替换其中一部分，而不用改 `AddKnowledge`、`Ask`、`AskStream` 这些公开入口。
+
+示例：
+
+```go
+store, err := ragagent.NewChromemVectorStore(ragagent.ChromemVectorStoreConfig{
+	DataDir:    ".rag-data",
+	Collection: "knowledge",
+})
+if err != nil {
+	log.Fatalf("new vector store: %v", err)
+}
+
+cfg := ragagent.Config{
+	ChatModel:      "gpt-4o-mini",
+	ChatBaseURL:    "https://api.openai.example/v1",
+	ChatAPIKey:     "replace-with-your-chat-key",
+	EmbeddingModel: "text-embedding-3-small",
+	EmbeddingAPIKey:"replace-with-your-embedding-key",
+	Storage: ragagent.StorageComponents{
+		VectorStore:    store,
+		DocumentLoader: ragagent.NewFileDocumentLoader(),
+		Reranker:       ragagent.NewRuleBasedReranker(),
+	},
+}
+```
+
+如果你有自己的向量库、文档加载器或重排器，只要实现根包公开的接口即可。默认行为不变，只有你显式注入的部分会被覆盖。
 
 ## 知识导入流程
 
@@ -402,6 +504,83 @@ func (metricsObserver) OnFallback(_ context.Context, e ragagent.FallbackEvent) {
 - 先把 `OnRetrieveMetrics`、`OnModelMetrics` 接到你的 metrics / tracing 适配层。
 - 对 `OnFallback` 建告警阈值；少量 fallback 可接受，持续升高通常说明参数或数据质量有问题。
 - 不要只看总耗时，至少分开看检索耗时和模型耗时。
+
+## 单次执行 Trace
+
+每次问答都会生成一份结构化 `ExecutionTrace`：
+- 同步问答：通过 `Answer.Trace` 获取
+- 流式问答：在最终 `done` 事件的 `StreamEvent.Trace` 中获取
+- 如需在失败路径也保留 trace，可以配置 `Config.TraceRecorder`
+
+trace 当前包含：
+- 原始 query 与 rewrite 后 query
+- 检索过滤条件
+- tool 调用摘要
+- `RetrievalMetrics`
+- `ModelMetrics`
+- fallback 事件
+- citation 列表
+- 成功 / 失败终态与总耗时
+
+同步示例：
+
+```go
+answer, err := agent.GetSession("demo").Ask(ctx, "总结一下架构")
+if err != nil {
+	log.Fatalf("ask: %v", err)
+}
+if answer.Trace != nil {
+	log.Printf("trace duration=%s final_hits=%d model=%s",
+		answer.Trace.Duration,
+		answer.Trace.Retrieval.FinalHitCount,
+		answer.Trace.Model.Model,
+	)
+}
+```
+
+流式示例：
+
+```go
+err := agent.GetSession("demo").AskStream(ctx, "总结一下架构", func(event ragagent.StreamEvent) error {
+	if event.Type == ragagent.EventDone && event.Trace != nil {
+		log.Printf("stream trace duration=%s tool_calls=%d",
+			event.Trace.Duration,
+			len(event.Trace.ToolCalls),
+		)
+	}
+	return nil
+})
+```
+
+如果你希望把 trace 统一送往自定义 sink，可以配置：
+
+```go
+type traceSink struct{}
+
+func (traceSink) OnExecutionTrace(_ context.Context, trace ragagent.ExecutionTrace) {
+	log.Printf("trace session=%s success=%v", trace.SessionID, trace.Success)
+}
+
+cfg := ragagent.Config{
+	TraceRecorder: traceSink{},
+}
+```
+
+如果你希望输出日志摘要，可以配置 `Config.Logger`。库不会自己初始化日志实例；未提供 logger 时保持 no-op。
+
+## 回归评测
+
+仓库内维护了一组不依赖真实外部模型 / embedding 网络调用的 deterministic regression suite，用于锁定：
+- runtime 注入
+- 同步 trace
+- 流式终态 trace
+- 联网搜索 fallback 的 tool trace
+
+执行方式：
+
+```bash
+go test ./... -run 'TestRuntimeRegressionSuite|TestRuntimeRegressionSuiteDeterministic' -count=1
+```
 
 ## 内置元数据提取
 

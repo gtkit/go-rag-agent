@@ -30,7 +30,9 @@ const (
 type Agent struct {
 	cfg         Config
 	store       storage.VectorStore
+	loader      DocumentLoader
 	embedder    llm.Embedder
+	reranker    Reranker
 	runner      graph.Runner
 	chunker     *rag.Chunker
 	dispatcher  telemetry.Dispatcher
@@ -52,6 +54,7 @@ type Agent struct {
 type rootRetriever struct {
 	store     storage.VectorStore
 	embedder  llm.Embedder
+	reranker  Reranker
 	topK      int
 	threshold float32
 	filter    storage.SearchFilter
@@ -60,10 +63,11 @@ type rootRetriever struct {
 	opts      retrieval.Options
 }
 
-func newRootRetriever(store storage.VectorStore, embedder llm.Embedder, topK int, threshold float32, filter storage.SearchFilter, hybrid bool, rerank bool, opts retrieval.Options) *rootRetriever {
+func newRootRetriever(store storage.VectorStore, embedder llm.Embedder, reranker Reranker, topK int, threshold float32, filter storage.SearchFilter, hybrid bool, rerank bool, opts retrieval.Options) *rootRetriever {
 	return &rootRetriever{
 		store:     store,
 		embedder:  embedder,
+		reranker:  reranker,
 		topK:      topK,
 		threshold: threshold,
 		filter:    filter,
@@ -187,7 +191,7 @@ func (r *rootRetriever) SearchDetailed(ctx context.Context, query string) ([]sto
 		}
 		shortlistSize := opts.RerankShortlistSize(r.topK, len(fusedHits))
 		metrics.RerankShortlistCount = shortlistSize
-		rerankedHits, rerankErr := safeRerank(query, fusedHits, shortlistSize, r.topK)
+		rerankedHits, rerankErr := safeRerank(ctx, r.reranker, query, fusedHits, shortlistSize, r.topK)
 		if rerankErr != nil {
 			if len(fusedHits) > r.topK {
 				fusedHits = fusedHits[:r.topK]
@@ -214,34 +218,45 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	ctx := context.Background()
-	store, err := storage.NewChromemStore(storage.Config{
-		DataDir:    cfg.DataDir,
-		Collection: defaultCollectionName,
-	})
+	store, err := newAgentVectorStore(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create vector store: %w", err)
 	}
-
-	embedder, err := llm.NewOpenAIEmbedder(ctx, llm.EmbeddingConfig{
-		Model:   cfg.EmbeddingModel,
-		BaseURL: firstNonEmpty(cfg.EmbeddingBaseURL, cfg.ChatBaseURL),
-		APIKey:  firstNonEmpty(cfg.EmbeddingAPIKey, cfg.ChatAPIKey),
-		Timeout: cfg.RequestTimeout,
-	})
-	if err != nil {
-		_ = store.Close()
-		return nil, fmt.Errorf("create embedder: %w", err)
+	loader := cfg.Storage.DocumentLoader
+	if loader == nil {
+		loader = NewFileDocumentLoader()
+	}
+	reranker := cfg.Storage.Reranker
+	if reranker == nil {
+		reranker = NewRuleBasedReranker()
 	}
 
-	chatModel, err := llm.NewOpenAIChatModel(ctx, llm.ChatConfig{
-		Model:   cfg.ChatModel,
-		BaseURL: cfg.ChatBaseURL,
-		APIKey:  cfg.ChatAPIKey,
-		Timeout: cfg.RequestTimeout,
-	})
-	if err != nil {
-		_ = store.Close()
-		return nil, fmt.Errorf("create chat model: %w", err)
+	embedder := cfg.Runtime.Embedder
+	if embedder == nil {
+		embedder, err = llm.NewOpenAIEmbedder(ctx, llm.EmbeddingConfig{
+			Model:   cfg.EmbeddingModel,
+			BaseURL: firstNonEmpty(cfg.EmbeddingBaseURL, cfg.ChatBaseURL),
+			APIKey:  firstNonEmpty(cfg.EmbeddingAPIKey, cfg.ChatAPIKey),
+			Timeout: cfg.RequestTimeout,
+		})
+		if err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("create embedder: %w", err)
+		}
+	}
+
+	chatModel := cfg.Runtime.ChatModel
+	if chatModel == nil {
+		chatModel, err = llm.NewOpenAIChatModel(ctx, llm.ChatConfig{
+			Model:   cfg.ChatModel,
+			BaseURL: cfg.ChatBaseURL,
+			APIKey:  cfg.ChatAPIKey,
+			Timeout: cfg.RequestTimeout,
+		})
+		if err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("create chat model: %w", err)
+		}
 	}
 
 	chunker, err := rag.NewChunker(cfg.ChunkSize, cfg.ChunkOverlap)
@@ -266,7 +281,7 @@ func New(cfg Config) (*Agent, error) {
 		RerankMultiplier:    cfg.RerankShortlistMultiplier,
 	}
 	retrievalTool := tools.NewRetrievalTool(
-		newRootRetriever(store, embedder, cfg.TopK, float32(cfg.SimilarityThreshold), storage.SearchFilter{}, cfg.EnableHybridSearch, cfg.EnableRerank, retrievalOptions),
+		newRootRetriever(store, embedder, reranker, cfg.TopK, float32(cfg.SimilarityThreshold), storage.SearchFilter{}, cfg.EnableHybridSearch, cfg.EnableRerank, retrievalOptions),
 	)
 	toolset := []tools.Tool{retrievalTool}
 	if webSearcher := newWebSearcher(cfg); webSearcher != nil {
@@ -287,7 +302,9 @@ func New(cfg Config) (*Agent, error) {
 	return &Agent{
 		cfg:        cfg,
 		store:      store,
+		loader:     loader,
 		embedder:   embedder,
+		reranker:   reranker,
 		runner:     runner,
 		chunker:    chunker,
 		dispatcher: dispatcher,
@@ -295,6 +312,48 @@ func New(cfg Config) (*Agent, error) {
 		dirSync:    dirSync,
 		sessions:   make(map[string]*Session),
 	}, nil
+}
+
+func newAgentVectorStore(cfg Config) (storage.VectorStore, error) {
+	if cfg.Storage.VectorStore != nil {
+		return rootToInternalVectorStore{inner: cfg.Storage.VectorStore}, nil
+	}
+	return storage.NewChromemStore(storage.Config{
+		DataDir:    cfg.DataDir,
+		Collection: defaultCollectionName,
+	})
+}
+
+type rootToInternalVectorStore struct {
+	inner VectorStore
+}
+
+func (s rootToInternalVectorStore) Upsert(ctx context.Context, chunks []storage.ChunkRecord) error {
+	return s.inner.Upsert(ctx, fromInternalChunkRecords(chunks))
+}
+
+func (s rootToInternalVectorStore) SearchWithFilter(ctx context.Context, queryEmbedding []float32, topK int, threshold float32, filter storage.SearchFilter) ([]storage.SearchHit, error) {
+	hits, err := s.inner.SearchWithFilter(ctx, queryEmbedding, topK, threshold, fromInternalSearchFilter(filter))
+	if err != nil {
+		return nil, err
+	}
+	return toInternalSearchHits(hits), nil
+}
+
+func (s rootToInternalVectorStore) DeleteBySourcePaths(ctx context.Context, sourcePaths []string) error {
+	return s.inner.DeleteBySourcePaths(ctx, sourcePaths)
+}
+
+func (s rootToInternalVectorStore) Search(ctx context.Context, queryEmbedding []float32, topK int, threshold float32) ([]storage.SearchHit, error) {
+	hits, err := s.inner.Search(ctx, queryEmbedding, topK, threshold)
+	if err != nil {
+		return nil, err
+	}
+	return toInternalSearchHits(hits), nil
+}
+
+func (s rootToInternalVectorStore) Close() error {
+	return s.inner.Close()
 }
 
 // GetSession 为给定 ID 返回稳定复用的 Session 实例。
@@ -447,12 +506,101 @@ func (a *Agent) emitFallback(ctx context.Context, s *Session, event FallbackEven
 	})
 }
 
-func (a *Agent) retrieve(ctx context.Context, s *Session, query string, filter storage.SearchFilter) ([]storage.SearchHit, string, error) {
+func (a *Agent) recordExecutionTrace(ctx context.Context, s *Session, trace ExecutionTrace) error {
+	if a.cfg.TraceRecorder == nil && a.cfg.Logger == nil {
+		return nil
+	}
+
+	if a.cfg.TraceRecorder != nil {
+		if err := a.runTelemetryCallback(s, func() {
+			a.cfg.TraceRecorder.OnExecutionTrace(ctx, trace)
+		}); err != nil {
+			return err
+		}
+	}
+
+	if a.cfg.Logger == nil {
+		return nil
+	}
+
+	for _, fallback := range trace.Fallbacks {
+		fallback := fallback
+		if err := a.runTelemetryCallback(s, func() {
+			a.cfg.Logger.Warn("ragagent fallback",
+				"session_id", trace.SessionID,
+				"stage", fallback.Stage,
+				"fallback_to", fallback.FallbackTo,
+				"error", fallback.Err,
+			)
+		}); err != nil {
+			return err
+		}
+	}
+
+	logFn := a.cfg.Logger.Info
+	if trace.Err != nil {
+		logFn = a.cfg.Logger.Error
+	}
+	return a.runTelemetryCallback(s, func() {
+		logFn("ragagent execution complete",
+			"session_id", trace.SessionID,
+			"stream", trace.Stream,
+			"success", trace.Success,
+			"query", trace.Query,
+			"rewritten_query", trace.RewrittenQuery,
+			"duration", trace.Duration,
+			"citations", len(trace.Citations),
+			"retrieval_hits", trace.Retrieval.FinalHitCount,
+			"error", trace.Err,
+		)
+	})
+}
+
+type graphToolObserver struct {
+	onStart func(context.Context, string) error
+	onEnd   func(context.Context, string, error) error
+}
+
+func (o graphToolObserver) OnToolStart(ctx context.Context, tool string) error {
+	if o.onStart == nil {
+		return nil
+	}
+	return o.onStart(ctx, tool)
+}
+
+func (o graphToolObserver) OnToolEnd(ctx context.Context, tool string, err error) error {
+	if o.onEnd == nil {
+		return nil
+	}
+	return o.onEnd(ctx, tool, err)
+}
+
+func (a *Agent) newGraphToolObserver(s *Session, trace *executionTraceBuilder) graph.ToolObserver {
+	return graphToolObserver{
+		onStart: func(ctx context.Context, tool string) error {
+			if trace != nil {
+				trace.startTool(tool)
+			}
+			return a.runTelemetryCallback(s, func() { a.dispatcher.OnToolStart(ctx, tool) })
+		},
+		onEnd: func(ctx context.Context, tool string, err error) error {
+			if trace != nil {
+				trace.endTool(tool, err)
+			}
+			return a.runTelemetryCallback(s, func() { a.dispatcher.OnToolEnd(ctx, tool, err) })
+		},
+	}
+}
+
+func (a *Agent) retrieve(ctx context.Context, s *Session, query string, filter storage.SearchFilter, trace *executionTraceBuilder) ([]storage.SearchHit, string, error) {
 	if err := a.runTelemetryCallback(s, func() { a.dispatcher.OnRetrieveStart(ctx, query) }); err != nil {
 		return nil, "", err
 	}
 	if err := a.runTelemetryCallback(s, func() { a.dispatcher.OnToolStart(ctx, retrieveToolName) }); err != nil {
 		return nil, "", err
+	}
+	if trace != nil {
+		trace.startTool(retrieveToolName)
 	}
 
 	var (
@@ -462,7 +610,7 @@ func (a *Agent) retrieve(ctx context.Context, s *Session, query string, filter s
 		evidence  string
 		metrics   RetrievalMetrics
 		fallbacks []FallbackEvent
-		retriever = newRootRetriever(a.store, a.embedder, a.cfg.TopK, float32(a.cfg.SimilarityThreshold), filter, a.cfg.EnableHybridSearch, a.cfg.EnableRerank, retrieval.Options{
+		retriever = newRootRetriever(a.store, a.embedder, a.reranker, a.cfg.TopK, float32(a.cfg.SimilarityThreshold), filter, a.cfg.EnableHybridSearch, a.cfg.EnableRerank, retrieval.Options{
 			CandidateMultiplier: a.cfg.HybridCandidateMultiplier,
 			RRFK:                a.cfg.HybridRRFK,
 			RerankMultiplier:    a.cfg.RerankShortlistMultiplier,
@@ -475,7 +623,13 @@ func (a *Agent) retrieve(ctx context.Context, s *Session, query string, filter s
 		if endErr := a.runTelemetryCallback(s, func() { a.dispatcher.OnToolEnd(ctx, retrieveToolName, runErr) }); endErr != nil && runErr == nil {
 			runErr = endErr
 		}
+		if trace != nil {
+			trace.endTool(retrieveToolName, runErr)
+		}
 		metrics.FinalHitCount = len(keptHits)
+		if trace != nil {
+			trace.setRetrieval(metrics, fallbacks)
+		}
 		if metricsErr := a.emitRetrievalMetrics(ctx, s, metrics); metricsErr != nil && runErr == nil {
 			runErr = metricsErr
 		}
@@ -549,13 +703,32 @@ func citationsFromHits(hits []storage.SearchHit) []Citation {
 	return citations
 }
 
-func (a *Agent) askLocked(ctx context.Context, s *Session, query string, opts QueryOptions) (Answer, error) {
-	if err := ctx.Err(); err != nil {
+func (a *Agent) askLocked(ctx context.Context, s *Session, query string, opts QueryOptions) (answer Answer, err error) {
+	if err = ctx.Err(); err != nil {
 		return Answer{}, err
 	}
 
 	rewrittenQuery := rag.RewriteFollowUp(query, s.history.LastUserQueries())
-	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery, opts.storageFilter())
+	trace := newExecutionTraceBuilder(s.id, query, rewrittenQuery, opts.Filter, false)
+	defer func() {
+		if trace == nil {
+			return
+		}
+		if answer.Trace == nil && err == nil {
+			finalTrace := trace.finish(nil)
+			answer.Trace = &finalTrace
+		}
+		finalTrace := trace.finish(err)
+		if err == nil {
+			answer.Trace = &finalTrace
+		}
+		if recordErr := a.recordExecutionTrace(ctx, s, finalTrace); recordErr != nil {
+			answer = Answer{}
+			err = recordErr
+		}
+	}()
+
+	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery, opts.storageFilter(), trace)
 	if err != nil {
 		if a.cfg.EnableWebSearch && errors.Is(err, ErrEvidenceInsufficient) {
 			hits = nil
@@ -566,32 +739,42 @@ func (a *Agent) askLocked(ctx context.Context, s *Session, query string, opts Qu
 	}
 
 	modelStartedAt := time.Now()
-	if err := a.runTelemetryCallback(s, func() { a.dispatcher.OnModelStart(ctx, a.cfg.ChatModel) }); err != nil {
+	modelName := a.cfg.chatModelName()
+	if err := a.runTelemetryCallback(s, func() { a.dispatcher.OnModelStart(ctx, modelName) }); err != nil {
 		return Answer{}, err
 	}
 	answerText, err := a.runner.Ask(ctx, graph.Request{
 		Query:        rewrittenQuery,
 		History:      s.history.Turns(),
 		EvidenceText: evidenceText,
+		ToolObserver: a.newGraphToolObserver(s, trace),
 	})
-	if endErr := a.runTelemetryCallback(s, func() { a.dispatcher.OnModelEnd(ctx, a.cfg.ChatModel, err) }); endErr != nil && err == nil {
+	if endErr := a.runTelemetryCallback(s, func() { a.dispatcher.OnModelEnd(ctx, modelName, err) }); endErr != nil && err == nil {
 		err = endErr
 	}
-	if metricsErr := a.emitModelMetrics(ctx, s, ModelMetrics{
-		Model:       a.cfg.ChatModel,
+	modelMetrics := ModelMetrics{
+		Model:       modelName,
 		Duration:    time.Since(modelStartedAt),
 		Stream:      false,
 		OutputChars: len(answerText),
-	}); metricsErr != nil && err == nil {
+	}
+	if trace != nil {
+		trace.setModel(modelMetrics)
+	}
+	if metricsErr := a.emitModelMetrics(ctx, s, modelMetrics); metricsErr != nil && err == nil {
 		err = metricsErr
 	}
 	if err != nil {
 		return Answer{}, fmt.Errorf("run answer generation: %w", err)
 	}
 
+	citations := citationsFromHits(hits)
+	if trace != nil {
+		trace.setCitations(citations)
+	}
 	return Answer{
 		Text:      answerText,
-		Citations: citationsFromHits(hits),
+		Citations: citations,
 	}, nil
 }
 
@@ -603,6 +786,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 		return "", fmt.Errorf("stream emitter is required")
 	}
 
+	trace := newExecutionTraceBuilder(s.id, query, rag.RewriteFollowUp(query, s.history.LastUserQueries()), opts.Filter, true)
 	emitEvent := func(event StreamEvent) error {
 		event.Timestamp = time.Now()
 		var emitErr error
@@ -617,13 +801,17 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 		if runErr == nil {
 			return nil
 		}
-		if err := emitEvent(StreamEvent{Type: EventError, Err: runErr}); err != nil {
+		finalTrace := trace.finish(runErr)
+		if err := emitEvent(StreamEvent{Type: EventError, Err: runErr, Trace: &finalTrace}); err != nil {
+			return err
+		}
+		if err := a.recordExecutionTrace(ctx, s, finalTrace); err != nil {
 			return err
 		}
 		return runErr
 	}
 
-	rewrittenQuery := rag.RewriteFollowUp(query, s.history.LastUserQueries())
+	rewrittenQuery := trace.trace.RewrittenQuery
 	filter := opts.storageFilter()
 	if err := emitEvent(StreamEvent{Type: EventRetrieveStart, Content: rewrittenQuery}); err != nil {
 		return "", err
@@ -632,7 +820,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 		return "", err
 	}
 
-	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery, filter)
+	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery, filter, trace)
 	if err != nil {
 		if a.cfg.EnableWebSearch && errors.Is(err, ErrEvidenceInsufficient) {
 			hits = nil
@@ -655,6 +843,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 	}
 
 	citations := citationsFromHits(hits)
+	trace.setCitations(citations)
 	for i := range citations {
 		citation := citations[i]
 		if err := emitEvent(StreamEvent{Type: EventCitation, Citation: &citation}); err != nil {
@@ -664,14 +853,17 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 
 	var answerBuilder strings.Builder
 	var emitterErr error
+	doneStep := 0
 	modelStartedAt := time.Now()
-	if err := a.runTelemetryCallback(s, func() { a.dispatcher.OnModelStart(ctx, a.cfg.ChatModel) }); err != nil {
+	modelName := a.cfg.chatModelName()
+	if err := a.runTelemetryCallback(s, func() { a.dispatcher.OnModelStart(ctx, modelName) }); err != nil {
 		return "", err
 	}
 	err = a.runner.AskStream(ctx, graph.Request{
 		Query:        rewrittenQuery,
 		History:      s.history.Turns(),
 		EvidenceText: evidenceText,
+		ToolObserver: a.newGraphToolObserver(s, trace),
 	}, func(event graph.Event) error {
 		switch event.Type {
 		case graph.EventAnswerChunk:
@@ -686,27 +878,23 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 			}
 			return emittedErr
 		case graph.EventDone:
-			emittedErr := emitEvent(StreamEvent{
-				Type: EventDone,
-				Step: event.Step,
-			})
-			if emittedErr != nil {
-				emitterErr = emittedErr
-			}
-			return emittedErr
+			doneStep = event.Step
+			return nil
 		default:
 			return nil
 		}
 	})
-	if endErr := a.runTelemetryCallback(s, func() { a.dispatcher.OnModelEnd(ctx, a.cfg.ChatModel, err) }); endErr != nil && err == nil {
+	if endErr := a.runTelemetryCallback(s, func() { a.dispatcher.OnModelEnd(ctx, modelName, err) }); endErr != nil && err == nil {
 		err = endErr
 	}
-	if metricsErr := a.emitModelMetrics(ctx, s, ModelMetrics{
-		Model:       a.cfg.ChatModel,
+	modelMetrics := ModelMetrics{
+		Model:       modelName,
 		Duration:    time.Since(modelStartedAt),
 		Stream:      true,
 		OutputChars: answerBuilder.Len(),
-	}); metricsErr != nil && err == nil {
+	}
+	trace.setModel(modelMetrics)
+	if metricsErr := a.emitModelMetrics(ctx, s, modelMetrics); metricsErr != nil && err == nil {
 		err = metricsErr
 	}
 	if err != nil {
@@ -714,6 +902,18 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 			return "", err
 		}
 		return "", emitError(err)
+	}
+
+	finalTrace := trace.finish(nil)
+	if err := emitEvent(StreamEvent{
+		Type:  EventDone,
+		Step:  doneStep,
+		Trace: &finalTrace,
+	}); err != nil {
+		return "", err
+	}
+	if err := a.recordExecutionTrace(ctx, s, finalTrace); err != nil {
+		return "", err
 	}
 
 	return answerBuilder.String(), nil
@@ -728,13 +928,23 @@ func safeLexicalSearch(query string, candidates []storage.SearchHit, topK int) (
 	return retrieval.LexicalSearch(query, candidates, topK), nil
 }
 
-func safeRerank(query string, candidates []storage.SearchHit, shortlistSize int, topK int) (hits []storage.SearchHit, err error) {
+func safeRerank(ctx context.Context, reranker Reranker, query string, candidates []storage.SearchHit, shortlistSize int, topK int) (hits []storage.SearchHit, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("rerank panic: %v", recovered)
 		}
 	}()
-	return retrieval.RerankShortlistWithLimit(query, candidates, shortlistSize, topK), nil
+	if reranker == nil {
+		return retrieval.RerankShortlistWithLimit(query, candidates, shortlistSize, topK), nil
+	}
+	reranked, err := reranker.Rerank(ctx, query, fromInternalSearchHits(candidates), RerankOptions{
+		ShortlistSize: shortlistSize,
+		TopK:          topK,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return toInternalSearchHits(reranked), nil
 }
 
 func (a *Agent) beginOperation() error {
@@ -785,4 +995,14 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func (c Config) chatModelName() string {
+	if trimmed := strings.TrimSpace(c.ChatModel); trimmed != "" {
+		return trimmed
+	}
+	if c.Runtime.ChatModel != nil {
+		return "custom-chat-model"
+	}
+	return "chat-model"
 }

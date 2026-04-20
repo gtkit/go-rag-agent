@@ -6,11 +6,18 @@ import (
 	"github.com/gtkit/go-rag-agent/internal/memory"
 )
 
+// ToolObserver 接收 graph 内部工具执行事件。
+type ToolObserver interface {
+	OnToolStart(ctx context.Context, tool string) error
+	OnToolEnd(ctx context.Context, tool string, err error) error
+}
+
 // Request 表示内部 graph 层的请求输入。
 type Request struct {
 	Query        string
 	History      []memory.Turn
 	EvidenceText string
+	ToolObserver ToolObserver
 }
 
 // EventType 标识 graph 层流式事件类型。
