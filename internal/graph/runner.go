@@ -22,11 +22,13 @@ type Request struct {
 	Query                     string
 	History                   []memory.Turn
 	EvidenceText              string
+	LongTermMemoryText        string
 	ConversationSummary       string
 	ResponseFormatInstruction string
 	MaxPromptTokens           int
 	MaxHistoryTokens          int
 	MaxEvidenceTokens         int
+	MaxMemoryTokens           int
 	MaxSummaryTokens          int
 	EnablePromptHardening     bool
 	ToolObserver              ToolObserver

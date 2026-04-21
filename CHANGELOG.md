@@ -9,6 +9,27 @@
 
 ## [Unreleased]
 
+## [v0.5.0] - 2026-04-21
+
+### Added
+- 长期记忆分层能力：
+  - `MemoryComponents`
+  - `LongTermMemoryStore`
+  - `NewInMemoryLongTermMemoryStore()`
+  - `LongTermMemoryTopK`
+  - `LongTermMemoryThreshold`
+  - `MaxMemoryTokens`
+- 同 Session 的长期语义记忆回忆：
+  - 成功问答后写入长期记忆
+  - 后续问答前检索并注入 `Relevant long-term memory`
+
+### Changed
+- `Ask` / `AskStream` 现在会在成功完成后把当前轮次写入长期记忆
+- README 补充短期/长期记忆分层和默认 in-memory 语义
+
+### Fixed
+- 修复长期记忆接入后 prompt 构造与现有 graph 请求的兼容性问题
+
 ## [v0.4.0] - 2026-04-21
 
 ### Added

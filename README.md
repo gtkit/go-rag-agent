@@ -106,6 +106,8 @@ func main() {
   说明：可选 runtime 注入；支持注入 `ChatModel`、`Embedder`
 - `Storage`
   说明：可选存储/加载/rerank 注入；支持注入 `VectorStore`、`DocumentLoader`、`Reranker`
+- `Memory`
+  说明：可选长期记忆注入；支持注入 `LongTermMemoryStore`
 - `ToolRegistry`
   说明：可选工具注册表；支持注册或覆写工具
 - `TraceRecorder`
@@ -137,8 +139,14 @@ func main() {
   说明：证据文本预算上限，默认 `2048`
 - `MaxSummaryTokens`
   说明：历史压缩摘要预算上限，默认 `256`
+- `MaxMemoryTokens`
+  说明：长期记忆回灌预算上限，默认 `512`
 - `EnablePromptHardening`
   说明：是否对检索文本和工具回灌内容做基础 prompt injection 硬化，默认开启
+- `LongTermMemoryTopK`
+  说明：长期记忆检索条数上限，默认 `3`
+- `LongTermMemoryThreshold`
+  说明：长期记忆相似度阈值，默认 `0`
 - `PDFOCRBridge` 只有在你要导入扫描版 PDF 时才需要配置；如果配置了，`Args` 必须同时包含 `{input}` 和 `{output}` 占位符。
 
 ## 自定义 runtime 注入
@@ -228,6 +236,46 @@ cfg := ragagent.Config{
 ```
 
 如果你有自己的向量库、文档加载器或重排器，只要实现根包公开的接口即可。默认行为不变，只有你显式注入的部分会被覆盖。
+
+## 长期记忆分层
+
+当前库现在区分两层记忆：
+- 短期记忆
+  当前 Session 内的最近对话历史，受 `MaxHistoryRounds` 和 token 预算控制
+- 长期记忆
+  可选的同 Session 语义记忆层，在短期窗口外仍可被检索并回灌 prompt
+
+默认长期记忆实现：
+- `NewInMemoryLongTermMemoryStore()`
+
+示例：
+
+```go
+memoryStore := ragagent.NewInMemoryLongTermMemoryStore()
+
+cfg := ragagent.Config{
+	ChatModel:       "gpt-4o-mini",
+	ChatBaseURL:     "https://api.openai.example/v1",
+	ChatAPIKey:      "replace-with-your-chat-key",
+	EmbeddingModel:  "text-embedding-3-small",
+	EmbeddingAPIKey: "replace-with-your-embedding-key",
+	Memory: ragagent.MemoryComponents{
+		LongTermMemory: memoryStore,
+	},
+	LongTermMemoryTopK:      3,
+	LongTermMemoryThreshold: 0,
+	MaxMemoryTokens:         512,
+}
+```
+
+当前语义：
+- 每次同步/流式问答成功后，会把该轮 `query + answer` 写入长期记忆
+- 后续问答前，会按当前 query 检索同 Session 的长期记忆
+- 命中的长期记忆会以 `Relevant long-term memory` 独立块注入 prompt
+
+当前限制：
+- 第一版只做同 Session 长期记忆，不做跨 Session 共享
+- 默认实现是进程内存，不做跨进程持久化
 
 ## Embedded Mode 与 Server Mode
 

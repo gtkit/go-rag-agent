@@ -261,6 +261,27 @@ func TestConfigValidate(t *testing.T) {
 			},
 			wantErr: ErrInvalidConfig,
 		},
+		{
+			name: "max memory tokens must be positive",
+			mutate: func(cfg *Config) {
+				cfg.MaxMemoryTokens = -1
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "long-term memory topk must be non-negative",
+			mutate: func(cfg *Config) {
+				cfg.LongTermMemoryTopK = -1
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "long-term memory threshold must be non-negative",
+			mutate: func(cfg *Config) {
+				cfg.LongTermMemoryThreshold = -1
+			},
+			wantErr: ErrInvalidConfig,
+		},
 	}
 
 	for _, tc := range tests {

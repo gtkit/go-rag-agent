@@ -84,12 +84,14 @@ func (r *ChatRunner) messagesForRequest(ctx context.Context, req Request) ([]llm
 	msgs := buildPromptMessages(
 		req.History,
 		req.EvidenceText,
+		req.LongTermMemoryText,
 		req.Query,
 		req.ResponseFormatInstruction,
 		req.ConversationSummary,
 		req.MaxPromptTokens,
 		req.MaxHistoryTokens,
 		req.MaxEvidenceTokens,
+		req.MaxMemoryTokens,
 		req.MaxSummaryTokens,
 		req.EnablePromptHardening,
 	)
@@ -128,12 +130,14 @@ func (r *ChatRunner) messagesForRequest(ctx context.Context, req Request) ([]llm
 		msgs = buildPromptMessages(
 			req.History,
 			toolResult,
+			req.LongTermMemoryText,
 			req.Query,
 			req.ResponseFormatInstruction,
 			req.ConversationSummary,
 			req.MaxPromptTokens,
 			req.MaxHistoryTokens,
 			req.MaxEvidenceTokens,
+			req.MaxMemoryTokens,
 			req.MaxSummaryTokens,
 			req.EnablePromptHardening,
 		)

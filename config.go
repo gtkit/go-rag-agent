@@ -39,6 +39,7 @@ type Config struct {
 	MaxHistoryTokens          int
 	MaxEvidenceTokens         int
 	MaxSummaryTokens          int
+	MaxMemoryTokens           int
 	EnablePromptHardening     bool
 	EnableHybridSearch        bool
 	EnableRerank              bool
@@ -48,12 +49,15 @@ type Config struct {
 	RerankShortlistMultiplier int
 	Runtime                   RuntimeComponents
 	Storage                   StorageComponents
+	Memory                    MemoryComponents
 	ToolRegistry              *ToolRegistry
 	PDFOCRBridge              PDFOCRBridgeConfig
 	WebSearch                 WebSearchConfig
 	Logger                    Logger
 	TraceRecorder             TraceRecorder
 	Callbacks                 []Callback
+	LongTermMemoryTopK        int
+	LongTermMemoryThreshold   float64
 }
 
 // withDefaults 返回一个应用了 Phase 1 默认值的配置副本。
@@ -89,8 +93,14 @@ func (c Config) withDefaults() Config {
 	if c.MaxSummaryTokens == 0 {
 		c.MaxSummaryTokens = 256
 	}
+	if c.MaxMemoryTokens == 0 {
+		c.MaxMemoryTokens = 512
+	}
 	if !c.EnablePromptHardening {
 		c.EnablePromptHardening = true
+	}
+	if c.LongTermMemoryTopK == 0 {
+		c.LongTermMemoryTopK = 3
 	}
 	if c.HybridCandidateMultiplier == 0 {
 		c.HybridCandidateMultiplier = 4
@@ -159,6 +169,9 @@ func (c Config) Validate() error {
 	if c.MaxSummaryTokens <= 0 {
 		return fmt.Errorf("max summary tokens must be positive: %w", ErrInvalidConfig)
 	}
+	if c.MaxMemoryTokens <= 0 {
+		return fmt.Errorf("max memory tokens must be positive: %w", ErrInvalidConfig)
+	}
 	if c.ChunkSize <= 0 {
 		return fmt.Errorf("chunk size must be positive: %w", ErrInvalidConfig)
 	}
@@ -173,6 +186,12 @@ func (c Config) Validate() error {
 	}
 	if c.MaxHistoryRounds <= 0 {
 		return fmt.Errorf("max history rounds must be positive: %w", ErrInvalidConfig)
+	}
+	if c.LongTermMemoryTopK < 0 {
+		return fmt.Errorf("long-term memory topk must be non-negative: %w", ErrInvalidConfig)
+	}
+	if c.LongTermMemoryThreshold < 0 {
+		return fmt.Errorf("long-term memory threshold must be non-negative: %w", ErrInvalidConfig)
 	}
 	if c.MaxToolCalls <= 0 {
 		return fmt.Errorf("max tool calls must be positive: %w", ErrInvalidConfig)

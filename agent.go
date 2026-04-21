@@ -28,19 +28,20 @@ const (
 
 // Agent 是根运行时对象，负责知识导入、检索、会话与执行编排。
 type Agent struct {
-	cfg          Config
-	store        storage.VectorStore
-	loader       DocumentLoader
-	embedder     llm.Embedder
-	reranker     Reranker
-	toolRegistry *ToolRegistry
-	runner       graph.Runner
-	chunker      *rag.Chunker
-	dispatcher   telemetry.Dispatcher
-	callbacks    []Callback
-	dirSync      *directorySyncState
-	dirSyncErr   error
-	dirSyncOnce  sync.Once
+	cfg            Config
+	store          storage.VectorStore
+	loader         DocumentLoader
+	embedder       llm.Embedder
+	reranker       Reranker
+	longTermMemory LongTermMemoryStore
+	toolRegistry   *ToolRegistry
+	runner         graph.Runner
+	chunker        *rag.Chunker
+	dispatcher     telemetry.Dispatcher
+	callbacks      []Callback
+	dirSync        *directorySyncState
+	dirSyncErr     error
+	dirSyncOnce    sync.Once
 
 	sessionsMu sync.RWMutex
 	sessions   map[string]*Session
@@ -231,6 +232,7 @@ func New(cfg Config) (*Agent, error) {
 	if reranker == nil {
 		reranker = NewRuleBasedReranker()
 	}
+	longTermMemory := cfg.Memory.LongTermMemory
 
 	embedder := cfg.Runtime.Embedder
 	if embedder == nil {
@@ -313,18 +315,19 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	return &Agent{
-		cfg:          cfg,
-		store:        store,
-		loader:       loader,
-		embedder:     embedder,
-		reranker:     reranker,
-		toolRegistry: toolRegistry,
-		runner:       runner,
-		chunker:      chunker,
-		dispatcher:   dispatcher,
-		callbacks:    rootCallbacks,
-		dirSync:      dirSync,
-		sessions:     make(map[string]*Session),
+		cfg:            cfg,
+		store:          store,
+		loader:         loader,
+		embedder:       embedder,
+		reranker:       reranker,
+		longTermMemory: longTermMemory,
+		toolRegistry:   toolRegistry,
+		runner:         runner,
+		chunker:        chunker,
+		dispatcher:     dispatcher,
+		callbacks:      rootCallbacks,
+		dirSync:        dirSync,
+		sessions:       make(map[string]*Session),
 	}, nil
 }
 
@@ -820,6 +823,11 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 			return Answer{}, err
 		}
 	}
+	longTermMemoryText, err := a.retrieveLongTermMemory(ctx, s.id, rewrittenQuery)
+	err = normalizeExecutionBudgetError(ctx, err)
+	if err != nil {
+		return Answer{}, err
+	}
 
 	modelStartedAt := time.Now()
 	modelName := a.cfg.chatModelName()
@@ -830,9 +838,11 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 		Query:                     rewrittenQuery,
 		History:                   s.history.Turns(),
 		EvidenceText:              evidenceText,
+		LongTermMemoryText:        longTermMemoryText,
 		MaxPromptTokens:           a.cfg.MaxPromptTokens,
 		MaxHistoryTokens:          a.cfg.MaxHistoryTokens,
 		MaxEvidenceTokens:         a.cfg.MaxEvidenceTokens,
+		MaxMemoryTokens:           a.cfg.MaxMemoryTokens,
 		MaxSummaryTokens:          a.cfg.MaxSummaryTokens,
 		EnablePromptHardening:     a.cfg.EnablePromptHardening,
 		ResponseFormatInstruction: responseFormatInstruction,
@@ -862,6 +872,9 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 	citations := citationsFromHits(hits)
 	if trace != nil {
 		trace.setCitations(citations)
+	}
+	if err := a.storeLongTermMemory(ctx, s.id, query, answerText); err != nil {
+		return Answer{}, err
 	}
 	return Answer{
 		Text:      answerText,
@@ -930,6 +943,11 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 			return "", emitError(err)
 		}
 	}
+	longTermMemoryText, err := a.retrieveLongTermMemory(ctx, s.id, rewrittenQuery)
+	err = normalizeExecutionBudgetError(ctx, err)
+	if err != nil {
+		return "", err
+	}
 	if err := emitEvent(StreamEvent{Type: EventRetrieveEnd}); err != nil {
 		return "", err
 	}
@@ -958,9 +976,11 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 		Query:                 rewrittenQuery,
 		History:               s.history.Turns(),
 		EvidenceText:          evidenceText,
+		LongTermMemoryText:    longTermMemoryText,
 		MaxPromptTokens:       a.cfg.MaxPromptTokens,
 		MaxHistoryTokens:      a.cfg.MaxHistoryTokens,
 		MaxEvidenceTokens:     a.cfg.MaxEvidenceTokens,
+		MaxMemoryTokens:       a.cfg.MaxMemoryTokens,
 		MaxSummaryTokens:      a.cfg.MaxSummaryTokens,
 		EnablePromptHardening: a.cfg.EnablePromptHardening,
 		ToolObserver:          a.newGraphToolObserver(s, trace, emitEvent),
@@ -1015,6 +1035,9 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 		return "", err
 	}
 	if err := a.recordExecutionTrace(ctx, s, finalTrace); err != nil {
+		return "", err
+	}
+	if err := a.storeLongTermMemory(ctx, s.id, query, answerBuilder.String()); err != nil {
 		return "", err
 	}
 
@@ -1143,4 +1166,59 @@ func normalizeExecutionBudgetError(ctx context.Context, err error) error {
 		return fmt.Errorf("%w: %w", ErrExecutionBudgetExceeded, err)
 	}
 	return err
+}
+
+func (a *Agent) retrieveLongTermMemory(ctx context.Context, sessionID string, query string) (string, error) {
+	if a.longTermMemory == nil || a.cfg.LongTermMemoryTopK == 0 {
+		return "", nil
+	}
+	rows, err := a.embedder.EmbedTexts(ctx, []string{query})
+	if err != nil {
+		return "", fmt.Errorf("embed long-term memory query: %w", err)
+	}
+	if len(rows) != 1 || len(rows[0]) == 0 {
+		return "", fmt.Errorf("long-term memory query embedding is empty")
+	}
+	hits, err := a.longTermMemory.Search(ctx, sessionID, rows[0], a.cfg.LongTermMemoryTopK, float32(a.cfg.LongTermMemoryThreshold))
+	if err != nil {
+		return "", fmt.Errorf("search long-term memory: %w", err)
+	}
+	if len(hits) == 0 {
+		return "", nil
+	}
+	var builder strings.Builder
+	for i, hit := range hits {
+		if i > 0 {
+			builder.WriteString("\n\n")
+		}
+		builder.WriteString("- User: ")
+		builder.WriteString(strings.TrimSpace(hit.Memory.User))
+		builder.WriteString("\n  Assistant: ")
+		builder.WriteString(strings.TrimSpace(hit.Memory.Assistant))
+	}
+	return builder.String(), nil
+}
+
+func (a *Agent) storeLongTermMemory(ctx context.Context, sessionID string, query string, answer string) error {
+	if a.longTermMemory == nil {
+		return nil
+	}
+	content := strings.TrimSpace(query) + "\n" + strings.TrimSpace(answer)
+	rows, err := a.embedder.EmbedTexts(ctx, []string{content})
+	if err != nil {
+		return fmt.Errorf("embed long-term memory record: %w", err)
+	}
+	if len(rows) != 1 || len(rows[0]) == 0 {
+		return fmt.Errorf("long-term memory record embedding is empty")
+	}
+	return a.longTermMemory.Store(ctx, []LongTermMemoryRecord{
+		{
+			ID:        fmt.Sprintf("%s:%d", sessionID, time.Now().UnixNano()),
+			SessionID: sessionID,
+			User:      query,
+			Assistant: answer,
+			Embedding: rows[0],
+			CreatedAt: time.Now(),
+		},
+	})
 }

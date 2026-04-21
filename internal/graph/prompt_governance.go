@@ -125,7 +125,7 @@ func estimateTextTokens(text string) int {
 	return len(enc.Encode(text, nil, nil))
 }
 
-func buildPromptMessages(history []memory.Turn, evidenceText, query string, responseFormatInstruction string, conversationSummary string, maxPromptTokens int, maxHistoryTokens int, maxEvidenceTokens int, maxSummaryTokens int, enablePromptHardening bool) []llm.Message {
+func buildPromptMessages(history []memory.Turn, evidenceText, longTermMemoryText, query string, responseFormatInstruction string, conversationSummary string, maxPromptTokens int, maxHistoryTokens int, maxEvidenceTokens int, maxMemoryTokens int, maxSummaryTokens int, enablePromptHardening bool) []llm.Message {
 	if maxPromptTokens == 0 {
 		maxPromptTokens = 4096
 	}
@@ -138,12 +138,15 @@ func buildPromptMessages(history []memory.Turn, evidenceText, query string, resp
 	if maxSummaryTokens == 0 {
 		maxSummaryTokens = 256
 	}
+	if maxMemoryTokens == 0 {
+		maxMemoryTokens = 512
+	}
 	keptHistory, computedSummary := compactHistoryForPrompt(history, maxHistoryTokens, maxSummaryTokens)
 	if strings.TrimSpace(conversationSummary) == "" {
 		conversationSummary = computedSummary
 	}
 
-	msgs := make([]llm.Message, 0, len(keptHistory)*2+5)
+	msgs := make([]llm.Message, 0, len(keptHistory)*2+6)
 	msgs = append(msgs, llm.Message{
 		Role:    llm.RoleSystem,
 		Content: "Answer with retrieved evidence first. If evidence is insufficient, use available tools. Prefer local retrieval before web search. If evidence is still insufficient, say so explicitly.",
@@ -171,10 +174,22 @@ func buildPromptMessages(history []memory.Turn, evidenceText, query string, resp
 
 	baseTokens := estimateMessagesTokens(msgs) + estimateTextTokens(query)
 	effectiveEvidenceBudget := maxEvidenceTokens
+	effectiveMemoryBudget := maxMemoryTokens
 	if maxPromptTokens > 0 {
 		remaining := maxPromptTokens - baseTokens
 		if remaining < effectiveEvidenceBudget {
 			effectiveEvidenceBudget = max(remaining, 0)
+		}
+		remaining -= effectiveEvidenceBudget
+		if remaining < effectiveMemoryBudget {
+			effectiveMemoryBudget = max(remaining, 0)
+		}
+	}
+	if strings.TrimSpace(longTermMemoryText) != "" {
+		safeMemory := sanitizeUntrustedText(longTermMemoryText, enablePromptHardening)
+		safeMemory = truncateTextToTokens(safeMemory, effectiveMemoryBudget)
+		if strings.TrimSpace(safeMemory) != "" {
+			msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: "Relevant long-term memory:\n" + safeMemory})
 		}
 	}
 	if strings.TrimSpace(evidenceText) != "" {
