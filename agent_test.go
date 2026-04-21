@@ -176,6 +176,23 @@ func (f *fakeRunner) AskStream(context.Context, graph.Request, graph.StreamEmitt
 	return fmt.Errorf("not implemented in task 3.4")
 }
 
+type blockingBudgetRunner struct {
+	started chan struct{}
+}
+
+func (r *blockingBudgetRunner) Ask(ctx context.Context, req graph.Request) (string, error) {
+	select {
+	case r.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+func (r *blockingBudgetRunner) AskStream(context.Context, graph.Request, graph.StreamEmitter) error {
+	return fmt.Errorf("not implemented")
+}
+
 type callbackRecorder struct {
 	mu     sync.Mutex
 	events []string
@@ -1123,6 +1140,44 @@ func TestSessionAskExecutionTrace(t *testing.T) {
 				t.Fatal("logger entries = 0, want at least one summary log")
 			}
 		})
+	}
+}
+
+func TestAskRespectsMaxExecutionDuration(t *testing.T) {
+	t.Parallel()
+
+	runner := &blockingBudgetRunner{started: make(chan struct{}, 1)}
+	a := &Agent{
+		cfg: Config{
+			ChatModel:            "budget-model",
+			TopK:                 1,
+			SimilarityThreshold:  0.5,
+			MaxHistoryRounds:     8,
+			MaxExecutionDuration: 20 * time.Millisecond,
+		},
+		store: &fakeStore{
+			searchHits: []storage.SearchHit{
+				{
+					Chunk: storage.ChunkRecord{
+						ChunkID:    "doc:0",
+						SourcePath: "/tmp/doc.md",
+						Title:      "doc",
+						Text:       "budget evidence",
+						StartRune:  0,
+						EndRune:    15,
+					},
+					Score: 0.99,
+				},
+			},
+		},
+		embedder: &fakeEmbedder{defaultVec: []float32{1, 0}},
+		runner:   runner,
+		sessions: make(map[string]*Session),
+	}
+
+	_, err := a.GetSession("execution-budget").Ask(context.Background(), "budget query")
+	if !errors.Is(err, ErrExecutionBudgetExceeded) {
+		t.Fatalf("Ask() error = %v, want errors.Is(..., %v)", err, ErrExecutionBudgetExceeded)
 	}
 }
 

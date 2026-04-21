@@ -22,7 +22,13 @@ type Request struct {
 	Query                     string
 	History                   []memory.Turn
 	EvidenceText              string
+	ConversationSummary       string
 	ResponseFormatInstruction string
+	MaxPromptTokens           int
+	MaxHistoryTokens          int
+	MaxEvidenceTokens         int
+	MaxSummaryTokens          int
+	EnablePromptHardening     bool
 	ToolObserver              ToolObserver
 	ToolCallLimiter           ToolCallLimiter
 }

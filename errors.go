@@ -21,4 +21,6 @@ var (
 	ErrStructuredOutputTarget = errors.New("ragagent: structured output target is invalid")
 	// ErrStructuredOutputInvalid indicates model output could not be parsed into structured JSON.
 	ErrStructuredOutputInvalid = errors.New("ragagent: structured output is invalid")
+	// ErrExecutionBudgetExceeded indicates total execution exceeded configured budget.
+	ErrExecutionBudgetExceeded = errors.New("ragagent: execution budget exceeded")
 )

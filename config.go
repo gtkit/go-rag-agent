@@ -34,6 +34,12 @@ type Config struct {
 	MaxToolCalls              int
 	MaxIterations             int
 	RequestTimeout            time.Duration
+	MaxExecutionDuration      time.Duration
+	MaxPromptTokens           int
+	MaxHistoryTokens          int
+	MaxEvidenceTokens         int
+	MaxSummaryTokens          int
+	EnablePromptHardening     bool
 	EnableHybridSearch        bool
 	EnableRerank              bool
 	EnableWebSearch           bool
@@ -70,6 +76,21 @@ func (c Config) withDefaults() Config {
 	}
 	if c.RequestTimeout == 0 {
 		c.RequestTimeout = 30 * time.Second
+	}
+	if c.MaxPromptTokens == 0 {
+		c.MaxPromptTokens = 4096
+	}
+	if c.MaxHistoryTokens == 0 {
+		c.MaxHistoryTokens = 1024
+	}
+	if c.MaxEvidenceTokens == 0 {
+		c.MaxEvidenceTokens = 2048
+	}
+	if c.MaxSummaryTokens == 0 {
+		c.MaxSummaryTokens = 256
+	}
+	if !c.EnablePromptHardening {
+		c.EnablePromptHardening = true
 	}
 	if c.HybridCandidateMultiplier == 0 {
 		c.HybridCandidateMultiplier = 4
@@ -122,6 +143,21 @@ func (c Config) Validate() error {
 	}
 	if c.RequestTimeout <= 0 {
 		return fmt.Errorf("request timeout must be positive: %w", ErrInvalidConfig)
+	}
+	if c.MaxExecutionDuration < 0 {
+		return fmt.Errorf("max execution duration must be non-negative: %w", ErrInvalidConfig)
+	}
+	if c.MaxPromptTokens <= 0 {
+		return fmt.Errorf("max prompt tokens must be positive: %w", ErrInvalidConfig)
+	}
+	if c.MaxHistoryTokens <= 0 {
+		return fmt.Errorf("max history tokens must be positive: %w", ErrInvalidConfig)
+	}
+	if c.MaxEvidenceTokens <= 0 {
+		return fmt.Errorf("max evidence tokens must be positive: %w", ErrInvalidConfig)
+	}
+	if c.MaxSummaryTokens <= 0 {
+		return fmt.Errorf("max summary tokens must be positive: %w", ErrInvalidConfig)
 	}
 	if c.ChunkSize <= 0 {
 		return fmt.Errorf("chunk size must be positive: %w", ErrInvalidConfig)

@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/gtkit/go-rag-agent/internal/llm"
-	"github.com/gtkit/go-rag-agent/internal/memory"
 	"github.com/gtkit/go-rag-agent/internal/tools"
 )
 
@@ -82,7 +81,18 @@ func (r *ChatRunner) AskStream(ctx context.Context, req Request, emit StreamEmit
 }
 
 func (r *ChatRunner) messagesForRequest(ctx context.Context, req Request) ([]llm.Message, error) {
-	msgs := buildPromptMessages(req.History, req.EvidenceText, req.Query, req.ResponseFormatInstruction)
+	msgs := buildPromptMessages(
+		req.History,
+		req.EvidenceText,
+		req.Query,
+		req.ResponseFormatInstruction,
+		req.ConversationSummary,
+		req.MaxPromptTokens,
+		req.MaxHistoryTokens,
+		req.MaxEvidenceTokens,
+		req.MaxSummaryTokens,
+		req.EnablePromptHardening,
+	)
 	if strings.TrimSpace(req.EvidenceText) != "" {
 		return msgs, nil
 	}
@@ -115,39 +125,22 @@ func (r *ChatRunner) messagesForRequest(ctx context.Context, req Request) ([]llm
 		if strings.TrimSpace(toolResult) == "" {
 			continue
 		}
-		msgs = buildPromptMessages(req.History, toolResult, req.Query, req.ResponseFormatInstruction)
+		msgs = buildPromptMessages(
+			req.History,
+			toolResult,
+			req.Query,
+			req.ResponseFormatInstruction,
+			req.ConversationSummary,
+			req.MaxPromptTokens,
+			req.MaxHistoryTokens,
+			req.MaxEvidenceTokens,
+			req.MaxSummaryTokens,
+			req.EnablePromptHardening,
+		)
 		return msgs, nil
 	}
 	if lastErr != nil {
 		return nil, fmt.Errorf("run fallback tools: %w", lastErr)
 	}
 	return nil, fmt.Errorf("no fallback tool produced evidence")
-}
-
-func buildPromptMessages(history []memory.Turn, evidenceText, query string, responseFormatInstruction string) []llm.Message {
-	msgs := make([]llm.Message, 0, len(history)*2+4)
-	msgs = append(msgs, llm.Message{
-		Role:    llm.RoleSystem,
-		Content: "Answer with retrieved evidence first. If evidence is insufficient, use available tools. Prefer local retrieval before web search. If evidence is still insufficient, say so explicitly.",
-	})
-	if strings.TrimSpace(responseFormatInstruction) != "" {
-		msgs = append(msgs, llm.Message{
-			Role:    llm.RoleSystem,
-			Content: responseFormatInstruction,
-		})
-	}
-
-	for _, turn := range history {
-		if strings.TrimSpace(turn.User) != "" {
-			msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: turn.User})
-		}
-		if strings.TrimSpace(turn.Assistant) != "" {
-			msgs = append(msgs, llm.Message{Role: llm.RoleAssistant, Content: turn.Assistant})
-		}
-	}
-	if strings.TrimSpace(evidenceText) != "" {
-		msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: "Relevant context:\n" + evidenceText})
-	}
-	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: query})
-	return msgs
 }

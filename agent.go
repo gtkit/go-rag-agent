@@ -783,6 +783,8 @@ func (a *Agent) askStructuredLocked(ctx context.Context, s *Session, query strin
 }
 
 func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query string, opts QueryOptions, responseFormatInstruction string) (answer Answer, err error) {
+	ctx, cancel := a.withExecutionBudget(ctx)
+	defer cancel()
 	if err = ctx.Err(); err != nil {
 		return Answer{}, err
 	}
@@ -809,6 +811,7 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 	}()
 
 	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery, opts.storageFilter(), trace, budget)
+	err = normalizeExecutionBudgetError(ctx, err)
 	if err != nil {
 		if a.hasFallbackTools() && errors.Is(err, ErrEvidenceInsufficient) {
 			hits = nil
@@ -827,10 +830,16 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 		Query:                     rewrittenQuery,
 		History:                   s.history.Turns(),
 		EvidenceText:              evidenceText,
+		MaxPromptTokens:           a.cfg.MaxPromptTokens,
+		MaxHistoryTokens:          a.cfg.MaxHistoryTokens,
+		MaxEvidenceTokens:         a.cfg.MaxEvidenceTokens,
+		MaxSummaryTokens:          a.cfg.MaxSummaryTokens,
+		EnablePromptHardening:     a.cfg.EnablePromptHardening,
 		ResponseFormatInstruction: responseFormatInstruction,
 		ToolObserver:              a.newGraphToolObserver(s, trace, nil),
 		ToolCallLimiter:           budget,
 	})
+	err = normalizeExecutionBudgetError(ctx, err)
 	if endErr := a.runTelemetryCallback(s, func() { a.dispatcher.OnModelEnd(ctx, modelName, err) }); endErr != nil && err == nil {
 		err = endErr
 	}
@@ -861,6 +870,8 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 }
 
 func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, opts QueryOptions, emit func(StreamEvent) error) (string, error) {
+	ctx, cancel := a.withExecutionBudget(ctx)
+	defer cancel()
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -904,6 +915,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 	}
 
 	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery, filter, trace, budget)
+	err = normalizeExecutionBudgetError(ctx, err)
 	if err != nil {
 		if a.hasFallbackTools() && errors.Is(err, ErrEvidenceInsufficient) {
 			hits = nil
@@ -943,11 +955,16 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 		return "", err
 	}
 	err = a.runner.AskStream(ctx, graph.Request{
-		Query:           rewrittenQuery,
-		History:         s.history.Turns(),
-		EvidenceText:    evidenceText,
-		ToolObserver:    a.newGraphToolObserver(s, trace, emitEvent),
-		ToolCallLimiter: budget,
+		Query:                 rewrittenQuery,
+		History:               s.history.Turns(),
+		EvidenceText:          evidenceText,
+		MaxPromptTokens:       a.cfg.MaxPromptTokens,
+		MaxHistoryTokens:      a.cfg.MaxHistoryTokens,
+		MaxEvidenceTokens:     a.cfg.MaxEvidenceTokens,
+		MaxSummaryTokens:      a.cfg.MaxSummaryTokens,
+		EnablePromptHardening: a.cfg.EnablePromptHardening,
+		ToolObserver:          a.newGraphToolObserver(s, trace, emitEvent),
+		ToolCallLimiter:       budget,
 	}, func(event graph.Event) error {
 		switch event.Type {
 		case graph.EventAnswerChunk:
@@ -968,6 +985,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 			return nil
 		}
 	})
+	err = normalizeExecutionBudgetError(ctx, err)
 	if endErr := a.runTelemetryCallback(s, func() { a.dispatcher.OnModelEnd(ctx, modelName, err) }); endErr != nil && err == nil {
 		err = endErr
 	}
@@ -1108,4 +1126,21 @@ func (a *Agent) hasFallbackTools() bool {
 		return true
 	}
 	return false
+}
+
+func (a *Agent) withExecutionBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	if a.cfg.MaxExecutionDuration <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeoutCause(ctx, a.cfg.MaxExecutionDuration, ErrExecutionBudgetExceeded)
+}
+
+func normalizeExecutionBudgetError(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) && errors.Is(context.Cause(ctx), ErrExecutionBudgetExceeded) {
+		return fmt.Errorf("%w: %w", ErrExecutionBudgetExceeded, err)
+	}
+	return err
 }

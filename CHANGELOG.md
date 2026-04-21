@@ -9,6 +9,30 @@
 
 ## [Unreleased]
 
+## [v0.4.0] - 2026-04-21
+
+### Added
+- 上下文窗口治理能力：
+  - `MaxPromptTokens`
+  - `MaxHistoryTokens`
+  - `MaxEvidenceTokens`
+  - `MaxSummaryTokens`
+- 整轮执行时长预算：
+  - `MaxExecutionDuration`
+- 基础 prompt hardening：
+  - `EnablePromptHardening`
+  - 对检索证据与工具回灌文本做不可信上下文包裹与明显注入模式过滤
+- 本地历史摘要压缩：
+  - 超出历史预算时生成 `Conversation summary`
+
+### Changed
+- prompt 构造现在会按 token 预算裁剪历史与证据
+- 同步与流式问答都接入整轮执行时长预算
+- README 补充上下文治理与提示硬化配置说明
+
+### Fixed
+- 修复 prompt 预算引入后对默认 graph 请求零值预算的兼容性问题
+
 ## [v0.3.0] - 2026-04-21
 
 ### Added

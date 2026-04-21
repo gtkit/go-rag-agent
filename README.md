@@ -127,6 +127,18 @@ func main() {
 - `HybridRRFK` 必须是正数。
 - `RerankShortlistMultiplier` 必须是正数。
 - `MaxToolCalls` 现在会真实约束工具调用次数：本地检索算一次，后续 fallback 工具链中的每次工具尝试也各算一次。
+- `MaxExecutionDuration`
+  说明：可选总执行时长预算；超过后会中断整个问答
+- `MaxPromptTokens`
+  说明：提示词总预算上限，默认 `4096`
+- `MaxHistoryTokens`
+  说明：历史对话预算上限，默认 `1024`
+- `MaxEvidenceTokens`
+  说明：证据文本预算上限，默认 `2048`
+- `MaxSummaryTokens`
+  说明：历史压缩摘要预算上限，默认 `256`
+- `EnablePromptHardening`
+  说明：是否对检索文本和工具回灌内容做基础 prompt injection 硬化，默认开启
 - `PDFOCRBridge` 只有在你要导入扫描版 PDF 时才需要配置；如果配置了，`Args` 必须同时包含 `{input}` 和 `{output}` 占位符。
 
 ## 自定义 runtime 注入
@@ -665,6 +677,44 @@ cfg := ragagent.Config{
 ```
 
 如果你希望输出日志摘要，可以配置 `Config.Logger`。库不会自己初始化日志实例；未提供 logger 时保持 no-op。
+
+## 上下文窗口治理与提示硬化
+
+当前库已经在 prompt 构造阶段增加基础治理能力：
+- 历史对话按 token 预算裁剪
+- 被裁掉的旧历史会做本地摘要压缩
+- 检索证据按 token 预算裁剪
+- 检索文本和工具回灌文本会经过基础 prompt injection 硬化
+- 可以为整个问答流程设置总执行时长预算
+
+示例：
+
+```go
+cfg := ragagent.Config{
+	ChatModel:           "gpt-4o-mini",
+	ChatBaseURL:         "https://api.openai.example/v1",
+	ChatAPIKey:          "replace-with-your-chat-key",
+	EmbeddingModel:      "text-embedding-3-small",
+	EmbeddingAPIKey:     "replace-with-your-embedding-key",
+	MaxPromptTokens:     4096,
+	MaxHistoryTokens:    1024,
+	MaxEvidenceTokens:   2048,
+	MaxSummaryTokens:    256,
+	MaxExecutionDuration: 15 * time.Second,
+	EnablePromptHardening: true,
+}
+```
+
+当前语义：
+- 历史窗口优先保留最近轮次
+- 超出预算的旧历史会压缩成 `Conversation summary`
+- 检索证据和 fallback 工具结果会被视为不可信文本
+- 命中明显 prompt injection 模式的行会被替换为 `[filtered potential prompt injection]`
+
+当前限制：
+- 这是轻量级本地 hardening，不是完整安全沙箱
+- 还没有做模型级 prompt cache
+- 还没有做长期记忆分层
 
 ## 结构化输出
 
