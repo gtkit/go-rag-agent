@@ -62,7 +62,7 @@ func (c WebSearchConfig) validate(enabled bool) error {
 	return nil
 }
 
-func newWebSearcher(cfg Config) websearch.Searcher {
+func newWebSearcher(cfg Config, governors *providerGovernors) websearch.Searcher {
 	if !cfg.EnableWebSearch {
 		return nil
 	}
@@ -82,5 +82,5 @@ func newWebSearcher(cfg Config) websearch.Searcher {
 		SearchDepth: searchCfg.SearchDepth,
 		Topic:       searchCfg.Topic,
 	})
-	return newResilientSearcher(searcher, cfg.ProviderGovernance, "tavily")
+	return newResilientSearcher(searcher, cfg.ProviderGovernance, governors.forProvider("tavily"), "tavily")
 }

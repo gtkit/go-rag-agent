@@ -33,6 +33,7 @@ type Agent struct {
 	loader         DocumentLoader
 	embedder       llm.Embedder
 	reranker       Reranker
+	retriever      Retriever
 	longTermMemory LongTermMemoryStore
 	toolRegistry   *ToolRegistry
 	runner         graph.Runner
@@ -59,32 +60,30 @@ type rootRetriever struct {
 	reranker  Reranker
 	topK      int
 	threshold float32
-	filter    storage.SearchFilter
 	hybrid    bool
 	rerank    bool
 	opts      retrieval.Options
 }
 
-func newRootRetriever(store storage.VectorStore, embedder llm.Embedder, reranker Reranker, topK int, threshold float32, filter storage.SearchFilter, hybrid bool, rerank bool, opts retrieval.Options) *rootRetriever {
+func newRootRetriever(store storage.VectorStore, embedder llm.Embedder, reranker Reranker, topK int, threshold float32, hybrid bool, rerank bool, opts retrieval.Options) *rootRetriever {
 	return &rootRetriever{
 		store:     store,
 		embedder:  embedder,
 		reranker:  reranker,
 		topK:      topK,
 		threshold: threshold,
-		filter:    filter,
 		hybrid:    hybrid,
 		rerank:    rerank,
 		opts:      opts,
 	}
 }
 
-func (r *rootRetriever) Search(ctx context.Context, query string) ([]storage.SearchHit, error) {
-	hits, _, _, err := r.SearchDetailed(ctx, query)
+func (r *rootRetriever) Search(ctx context.Context, req RetrieverRequest) ([]storage.SearchHit, error) {
+	hits, _, _, err := r.SearchDetailed(ctx, req)
 	return hits, err
 }
 
-func (r *rootRetriever) SearchDetailed(ctx context.Context, query string) ([]storage.SearchHit, RetrievalMetrics, []FallbackEvent, error) {
+func (r *rootRetriever) SearchDetailed(ctx context.Context, req RetrieverRequest) ([]storage.SearchHit, RetrievalMetrics, []FallbackEvent, error) {
 	metrics := RetrievalMetrics{
 		HybridEnabled: r.hybrid,
 		RerankEnabled: r.rerank,
@@ -95,6 +94,8 @@ func (r *rootRetriever) SearchDetailed(ctx context.Context, query string) ([]sto
 		return metrics
 	}
 
+	query := req.Query
+	filter := toInternalRetrievalFilter(req.Filter)
 	if strings.TrimSpace(query) == "" {
 		return nil, finish(), nil, fmt.Errorf("search query is required")
 	}
@@ -107,7 +108,7 @@ func (r *rootRetriever) SearchDetailed(ctx context.Context, query string) ([]sto
 	}
 
 	vectorOnlySearch := func() ([]storage.SearchHit, error) {
-		hits, err := r.store.SearchWithFilter(ctx, rows[0], r.topK, r.threshold, r.filter)
+		hits, err := r.store.SearchWithFilter(ctx, rows[0], r.topK, r.threshold, filter)
 		if err != nil {
 			return nil, fmt.Errorf("search vector store: %w", err)
 		}
@@ -137,7 +138,7 @@ func (r *rootRetriever) SearchDetailed(ctx context.Context, query string) ([]sto
 	}
 
 	opts := r.opts.Normalize()
-	allHits, err := r.store.SearchWithFilter(ctx, rows[0], math.MaxInt, -1, r.filter)
+	allHits, err := r.store.SearchWithFilter(ctx, rows[0], math.MaxInt, -1, filter)
 	if err != nil {
 		hits, fallbackErr := vectorOnlySearch()
 		if fallbackErr != nil {
@@ -233,6 +234,7 @@ func New(cfg Config) (*Agent, error) {
 		reranker = NewRuleBasedReranker()
 	}
 	longTermMemory := cfg.Memory.LongTermMemory
+	governors := newProviderGovernors(cfg.ProviderGovernance, cfg.Logger)
 
 	embedder := cfg.Runtime.Embedder
 	if embedder == nil {
@@ -247,7 +249,7 @@ func New(cfg Config) (*Agent, error) {
 			return nil, fmt.Errorf("create embedder: %w", err)
 		}
 	}
-	embedder = newResilientEmbedder(embedder, cfg.ProviderGovernance, "openai", cfg.EmbeddingModel)
+	embedder = newResilientEmbedder(embedder, cfg.ProviderGovernance, governors.forProvider("openai"), "openai", cfg.EmbeddingModel)
 
 	chatModel := cfg.Runtime.ChatModel
 	if chatModel == nil {
@@ -262,7 +264,7 @@ func New(cfg Config) (*Agent, error) {
 			return nil, fmt.Errorf("create chat model: %w", err)
 		}
 	}
-	chatModel = newResilientChatModel(chatModel, cfg.ProviderGovernance, "openai", cfg.ChatModel)
+	chatModel = newResilientChatModel(chatModel, cfg.ProviderGovernance, governors.forProvider("openai"), "openai", cfg.ChatModel)
 
 	chunker, err := rag.NewChunker(cfg.ChunkSize, cfg.ChunkOverlap)
 	if err != nil {
@@ -286,7 +288,14 @@ func New(cfg Config) (*Agent, error) {
 		RerankMultiplier:    cfg.RerankShortlistMultiplier,
 	}
 	retrievalTool := tools.NewRetrievalTool(
-		newRootRetriever(store, embedder, reranker, cfg.TopK, float32(cfg.SimilarityThreshold), storage.SearchFilter{}, cfg.EnableHybridSearch, cfg.EnableRerank, retrievalOptions),
+		func() tools.Retriever {
+			if cfg.Retrieval.Retriever != nil {
+				return retrieverToolAdapter{retriever: cfg.Retrieval.Retriever}
+			}
+			return retrieverToolAdapter{retriever: &defaultRetriever{
+				inner: newRootRetriever(store, embedder, reranker, cfg.TopK, float32(cfg.SimilarityThreshold), cfg.EnableHybridSearch, cfg.EnableRerank, retrievalOptions),
+			}}
+		}(),
 	)
 	toolRegistry := cfg.ToolRegistry.clone()
 	if toolRegistry == nil {
@@ -295,7 +304,7 @@ func New(cfg Config) (*Agent, error) {
 	if _, ok := toolRegistry.Lookup(retrieveToolName); !ok {
 		_ = toolRegistry.registerOrReplace(retrievalTool)
 	}
-	if webSearcher := newWebSearcher(cfg); webSearcher != nil {
+	if webSearcher := newWebSearcher(cfg, governors); webSearcher != nil {
 		if _, ok := toolRegistry.Lookup("search_web"); !ok {
 			_ = toolRegistry.registerOrReplace(tools.NewWebSearchTool(webSearcher))
 		}
@@ -322,6 +331,7 @@ func New(cfg Config) (*Agent, error) {
 		loader:         loader,
 		embedder:       embedder,
 		reranker:       reranker,
+		retriever:      cfg.Retrieval.Retriever,
 		longTermMemory: longTermMemory,
 		toolRegistry:   toolRegistry,
 		runner:         runner,
@@ -645,6 +655,7 @@ func (a *Agent) newGraphToolObserver(s *Session, trace *executionTraceBuilder, e
 }
 
 func (a *Agent) retrieve(ctx context.Context, s *Session, query string, filter storage.SearchFilter, trace *executionTraceBuilder, budget *toolCallBudget) ([]storage.SearchHit, string, error) {
+	filter = a.cfg.AccessBoundary.applyToFilter(filter)
 	if err := budget.Acquire(retrieveToolName); err != nil {
 		return nil, "", err
 	}
@@ -665,12 +676,17 @@ func (a *Agent) retrieve(ctx context.Context, s *Session, query string, filter s
 		evidence  string
 		metrics   RetrievalMetrics
 		fallbacks []FallbackEvent
-		retriever = newRootRetriever(a.store, a.embedder, a.reranker, a.cfg.TopK, float32(a.cfg.SimilarityThreshold), filter, a.cfg.EnableHybridSearch, a.cfg.EnableRerank, retrieval.Options{
-			CandidateMultiplier: a.cfg.HybridCandidateMultiplier,
-			RRFK:                a.cfg.HybridRRFK,
-			RerankMultiplier:    a.cfg.RerankShortlistMultiplier,
-		})
+		retriever = a.retriever
 	)
+	if retriever == nil {
+		retriever = &defaultRetriever{
+			inner: newRootRetriever(a.store, a.embedder, a.reranker, a.cfg.TopK, float32(a.cfg.SimilarityThreshold), a.cfg.EnableHybridSearch, a.cfg.EnableRerank, retrieval.Options{
+				CandidateMultiplier: a.cfg.HybridCandidateMultiplier,
+				RRFK:                a.cfg.HybridRRFK,
+				RerankMultiplier:    a.cfg.RerankShortlistMultiplier,
+			}),
+		}
+	}
 	defer func() {
 		if endErr := a.runTelemetryCallback(s, func() { a.dispatcher.OnRetrieveEnd(ctx, len(keptHits), runErr) }); endErr != nil && runErr == nil {
 			runErr = endErr
@@ -695,11 +711,15 @@ func (a *Agent) retrieve(ctx context.Context, s *Session, query string, filter s
 		}
 	}()
 
-	hits, metrics, fallbacks, runErr = retriever.SearchDetailed(ctx, query)
+	rootHits, metrics, fallbacks, runErr := retriever.SearchDetailed(ctx, RetrieverRequest{
+		Query:  query,
+		Filter: fromInternalRetrievalFilter(filter),
+	})
 	if runErr != nil {
 		runErr = fmt.Errorf("retrieve hits: %w", runErr)
 		return nil, "", runErr
 	}
+	hits = toInternalSearchHits(rootHits)
 
 	ragChunks := make([]rag.Chunk, 0, len(hits))
 	for _, hit := range hits {
@@ -850,6 +870,8 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 		MaxMemoryTokens:           a.cfg.MaxMemoryTokens,
 		MaxSummaryTokens:          a.cfg.MaxSummaryTokens,
 		EnablePromptHardening:     a.cfg.EnablePromptHardening,
+		PromptCache:               rootToGraphPromptCache{inner: a.cfg.PromptCache},
+		PromptCacheObserver:       trace.setPromptCacheHit,
 		ResponseFormatInstruction: responseFormatInstruction,
 		ToolObserver:              a.newGraphToolObserver(s, trace, nil),
 		ToolCallLimiter:           budget,
@@ -991,6 +1013,8 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 		MaxMemoryTokens:       a.cfg.MaxMemoryTokens,
 		MaxSummaryTokens:      a.cfg.MaxSummaryTokens,
 		EnablePromptHardening: a.cfg.EnablePromptHardening,
+		PromptCache:           rootToGraphPromptCache{inner: a.cfg.PromptCache},
+		PromptCacheObserver:   trace.setPromptCacheHit,
 		ToolObserver:          a.newGraphToolObserver(s, trace, emitEvent),
 		ToolCallLimiter:       budget,
 	}, func(event graph.Event) error {

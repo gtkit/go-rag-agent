@@ -104,10 +104,16 @@ func main() {
 - `RerankShortlistMultiplier`（默认 `2`）
 - `Runtime`
   说明：可选 runtime 注入；支持注入 `ChatModel`、`Embedder`
+- `Retrieval`
+  说明：可选检索编排注入；支持注入 `Retriever`
 - `Storage`
   说明：可选存储/加载/rerank 注入；支持注入 `VectorStore`、`DocumentLoader`、`Reranker`
 - `Memory`
   说明：可选长期记忆注入；支持注入 `LongTermMemoryStore`
+- `PromptCache`
+  说明：可选本地 prompt cache；支持缓存构造后的 prompt messages
+- `AccessBoundary`
+  说明：可选 namespace 与来源权限边界
 - `ToolRegistry`
   说明：可选工具注册表；支持注册或覆写工具
 - `ProviderGovernance`
@@ -155,6 +161,16 @@ func main() {
   说明：provider 重试基础退避时间，默认 `200ms`
 - `ProviderGovernance.RetryMaxDelay`
   说明：provider 重试最大退避时间，默认 `2s`
+- `ProviderGovernance.RateLimit.RequestsPerSecond`
+  说明：provider 级本地限流速率；`<= 0` 表示关闭，默认关闭
+- `ProviderGovernance.RateLimit.Burst`
+  说明：provider 级本地限流突发桶大小；启用限流时默认 `1`
+- `ProviderGovernance.CircuitBreaker.FailureThreshold`
+  说明：provider 级断路器连续失败阈值；`<= 0` 表示关闭，默认关闭
+- `ProviderGovernance.CircuitBreaker.OpenTimeout`
+  说明：provider 级断路器 open 窗口时长；断路器开启时必须为正数
+- `ProviderGovernance.CircuitBreaker.HalfOpenMaxCalls`
+  说明：provider 级断路器进入 half-open 后允许的最大探测调用数，默认 `1`
 - `PDFOCRBridge` 只有在你要导入扫描版 PDF 时才需要配置；如果配置了，`Args` 必须同时包含 `{input}` 和 `{output}` 占位符。
 
 ## 自定义 runtime 注入
@@ -245,6 +261,124 @@ cfg := ragagent.Config{
 
 如果你有自己的向量库、文档加载器或重排器，只要实现根包公开的接口即可。默认行为不变，只有你显式注入的部分会被覆盖。
 
+## 自定义 Retriever
+
+如果你希望替换整个检索编排，而不只是替换底层 `VectorStore`，现在也可以通过 `Config.Retrieval` 注入根包公开的 `Retriever`。
+
+默认构造器：
+- `NewRetriever(store, embedder, reranker, cfg)`
+
+这条边界适合接管：
+- 查询到检索请求的转换
+- source path / metadata filter 的解释
+- hybrid / rerank 的执行策略
+
+示例：
+
+```go
+retriever := ragagent.NewRetriever(
+	store,
+	embedder,
+	ragagent.NewRuleBasedReranker(),
+	ragagent.RetrieverConfig{
+		TopK:                    5,
+		SimilarityThreshold:     0,
+		EnableHybridSearch:      true,
+		EnableRerank:            true,
+		HybridCandidateMultiply: 4,
+		HybridRRFK:              60,
+		RerankShortlistMultiple: 2,
+	},
+)
+
+cfg := ragagent.Config{
+	Runtime: ragagent.RuntimeComponents{
+		ChatModel: chatModel,
+		Embedder:  embedder,
+	},
+	Retrieval: ragagent.RetrievalComponents{
+		Retriever: retriever,
+	},
+}
+```
+
+## Prompt Cache
+
+当前库支持本地 prompt messages cache，用于复用相同 deterministic request 的 prompt 构造结果。
+
+默认实现：
+- `NewInMemoryPromptCache()`
+
+示例：
+
+```go
+cfg := ragagent.Config{
+	PromptCache: ragagent.NewInMemoryPromptCache(),
+}
+```
+
+当前语义：
+- 命中 cache 时会跳过重复的 prompt messages 构造
+- `ExecutionTrace.PromptCacheHit` 会标记本次是否命中本地 cache
+- 这是本地 prompt artifact cache，不是 provider-native prompt cache
+
+## Access Boundary
+
+当前库支持静态 namespace 与来源权限边界：
+
+```go
+cfg := ragagent.Config{
+	AccessBoundary: ragagent.AccessBoundaryConfig{
+		Namespace:             "tenant-a",
+		AllowedSourcePaths:    []string{"/kb/tenant-a/doc.md"},
+		AllowedSourcePrefixes: []string{"/kb/tenant-a/"},
+	},
+}
+```
+
+当前语义：
+- 导入知识时会把 namespace 写入 chunk metadata
+- 检索时会自动把 namespace 与 allowed source 边界合并进 filter
+- query 不能越过配置允许的来源范围
+
+## Eval Runner
+
+当前库支持根包 deterministic eval runner：
+
+```go
+summary, results, err := ragagent.RunEvalSuite(ctx, agent, []ragagent.EvalCase{
+	{
+		Name:                   "basic",
+		SessionID:              "eval",
+		Query:                  "what changed",
+		WantCitationSources:    []string{"/tmp/doc.md"},
+		WantAnswerContains:     []string{"ok"},
+		WantGroundedSubstrings: []string{"ok"},
+	},
+})
+_ = summary
+_ = results
+_ = err
+```
+
+结构化输出评测：
+
+```go
+results, err := ragagent.RunStructuredEvalSuite(ctx, agent, []ragagent.StructuredEvalCase{
+	{
+		Name:      "structured",
+		SessionID: "eval-structured",
+		Query:     "status?",
+		NewTarget: func() any { return &MyTarget{} },
+		Validate: func(target any) error {
+			return nil
+		},
+	},
+})
+_ = results
+_ = err
+```
+
 ## 长期记忆分层
 
 当前库现在区分两层记忆：
@@ -255,6 +389,7 @@ cfg := ragagent.Config{
 
 默认长期记忆实现：
 - `NewInMemoryLongTermMemoryStore()`
+- `NewVectorLongTermMemoryStore(store)`
 
 示例：
 
@@ -280,10 +415,35 @@ cfg := ragagent.Config{
 - 每次同步/流式问答成功后，会把该轮 `query + answer` 写入长期记忆
 - 后续问答前，会按当前 query 检索同 Session 的长期记忆
 - 命中的长期记忆会以 `Relevant long-term memory` 独立块注入 prompt
+- 如果你把长期记忆接到持久化 `VectorStore`，长期记忆也会跨进程保留
 
 当前限制：
 - 第一版只做同 Session 长期记忆，不做跨 Session 共享
-- 默认实现是进程内存，不做跨进程持久化
+- 默认实现仍然是进程内存；持久化需要显式注入 `NewVectorLongTermMemoryStore(...)`
+
+示例：复用持久化 `pgvector` 作为长期记忆后端
+
+```go
+memoryVectorStore, err := ragagent.NewPGVectorStore(ragagent.PGVectorStoreConfig{
+	ConnString: "postgres://user:pass@127.0.0.1:5432/rag?sslmode=disable",
+	TableName:  "long_term_memories",
+	Dimensions: 1536,
+})
+if err != nil {
+	log.Fatalf("new long-term memory store: %v", err)
+}
+
+cfg := ragagent.Config{
+	ChatModel:       "gpt-4o-mini",
+	ChatBaseURL:     "https://api.openai.example/v1",
+	ChatAPIKey:      "replace-with-your-chat-key",
+	EmbeddingModel:  "text-embedding-3-small",
+	EmbeddingAPIKey: "replace-with-your-embedding-key",
+	Memory: ragagent.MemoryComponents{
+		LongTermMemory: ragagent.NewVectorLongTermMemoryStore(memoryVectorStore),
+	},
+}
+```
 
 ## Embedded Mode 与 Server Mode
 
@@ -294,7 +454,7 @@ cfg := ragagent.Config{
   适合单机、本地优先、零外部数据库依赖
 - `server mode`
   可选模式，使用 `PostgreSQL/pgvector`
-  适合多实例共享知识库、持久化备份、数据库运维和服务端部署
+适合多实例共享知识库、持久化备份、数据库运维和服务端部署
 
 如果你不注入 `Config.Storage.VectorStore`，库会继续使用默认的 embedded mode。
 
@@ -326,11 +486,52 @@ cfg := ragagent.Config{
 }
 ```
 
+如果你的 PostgreSQL 连接层已经统一使用 `pgorm`，`PGVectorStore` 现在也支持两种接法：
+
+```go
+pgCfg := pgorm.NewConfig(
+	pgorm.WithDSN("postgres://user:pass@127.0.0.1:5432/rag?sslmode=disable"),
+	pgorm.WithStartupPing(false),
+)
+
+store, err := ragagent.NewPGVectorStore(ragagent.PGVectorStoreConfig{
+	PGORMConfig: &pgCfg,
+	TableName:   "knowledge_chunks",
+	Dimensions:  1536,
+})
+if err != nil {
+	log.Fatalf("new pgvector store with pgorm config: %v", err)
+}
+```
+
+或者复用一个外部已经打开的 `pgorm.Client`：
+
+```go
+client, err := pgorm.Open(ctx,
+	pgorm.WithDSN("postgres://user:pass@127.0.0.1:5432/rag?sslmode=disable"),
+	pgorm.WithStartupPing(false),
+)
+if err != nil {
+	log.Fatalf("open pgorm client: %v", err)
+}
+defer client.Close()
+
+store, err := ragagent.NewPGVectorStore(ragagent.PGVectorStoreConfig{
+	PGORMClient: client,
+	TableName:   "knowledge_chunks",
+	Dimensions:  1536,
+})
+if err != nil {
+	log.Fatalf("new pgvector store with pgorm client: %v", err)
+}
+```
+
 当前第一版约束：
 - `Dimensions` 必填
 - 第一版只正式支持 `DistanceMetric="cosine"`
 - 默认索引策略是 `none`，即 exact search
 - `HNSW` / `IVFFlat` 是可选后续索引策略，不会默认启用
+- `ConnString`、`Pool`、`PGORMConfig`、`PGORMClient` 四种连接来源必须且只能提供一种
 
 集成测试说明：
 - PostgreSQL/pgvector integration tests 通过环境变量 `RAGAGENT_PGVECTOR_TEST_DSN` 启用
@@ -736,9 +937,11 @@ cfg := ragagent.Config{
 
 ## Provider 治理与 usage/cost 聚合
 
-当前库已经在 provider 层增加三件事：
+当前库已经在 provider 层增加五件事：
 - 错误分类
 - 有限次重试与退避
+- 可选的本地限流
+- 可选的断路器
 - usage/cost 聚合
 
 覆盖范围：
@@ -759,6 +962,15 @@ cfg := ragagent.Config{
 		RetryMaxAttempts: 2,
 		RetryBaseDelay:   200 * time.Millisecond,
 		RetryMaxDelay:    2 * time.Second,
+		RateLimit: ragagent.ProviderRateLimitConfig{
+			RequestsPerSecond: 5,
+			Burst:             2,
+		},
+		CircuitBreaker: ragagent.ProviderCircuitBreakerConfig{
+			FailureThreshold: 3,
+			OpenTimeout:      30 * time.Second,
+			HalfOpenMaxCalls: 1,
+		},
 		Pricing: ragagent.ProviderPricingConfig{
 			ChatModels: map[string]ragagent.TokenPricing{
 				"gpt-4o-mini": {
@@ -780,11 +992,12 @@ cfg := ragagent.Config{
 当前语义：
 - `429`、瞬时网络错误、部分 `5xx` 会被识别为可重试错误
 - stream 只有在尚未输出任何 chunk 时才允许自动重试
+- 同一 provider 名下的聊天、embedding、web search 会共享本地治理状态
+- 本地限流只在显式配置 `RateLimit.RequestsPerSecond > 0` 时生效
+- 断路器只在显式配置 `CircuitBreaker.FailureThreshold > 0` 且 `OpenTimeout > 0` 时生效
+- 认证错误和 permanent 错误不会打开断路器
 - provider usage / estimated cost 会聚合到 `ExecutionTrace.ProviderCalls`
-
-当前限制：
-- 这轮还没有做 provider 限流
-- 这轮还没有做断路器
+- provider trace 还会记录 `ThrottleDelay` 和 `CircuitState`
 
 ## 上下文窗口治理与提示硬化
 
@@ -822,7 +1035,6 @@ cfg := ragagent.Config{
 当前限制：
 - 这是轻量级本地 hardening，不是完整安全沙箱
 - 还没有做模型级 prompt cache
-- 还没有做长期记忆分层
 
 ## 结构化输出
 

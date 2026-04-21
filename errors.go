@@ -23,4 +23,6 @@ var (
 	ErrStructuredOutputInvalid = errors.New("ragagent: structured output is invalid")
 	// ErrExecutionBudgetExceeded indicates total execution exceeded configured budget.
 	ErrExecutionBudgetExceeded = errors.New("ragagent: execution budget exceeded")
+	// ErrProviderCircuitOpen indicates provider circuit breaker rejected the call.
+	ErrProviderCircuitOpen = errors.New("ragagent: provider circuit open")
 )

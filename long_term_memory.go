@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -43,11 +44,27 @@ type inMemoryLongTermMemoryStore struct {
 	records []LongTermMemoryRecord
 }
 
+const (
+	longTermMemorySourcePrefix     = "/ragagent/memory/"
+	longTermMemoryMetadataUserKey  = "rag_memory_user"
+	longTermMemoryMetadataReplyKey = "rag_memory_assistant"
+	longTermMemoryMetadataTimeKey  = "rag_memory_created_at"
+)
+
 // NewInMemoryLongTermMemoryStore 创建默认 in-memory 长期记忆实现。
 func NewInMemoryLongTermMemoryStore() LongTermMemoryStore {
 	return &inMemoryLongTermMemoryStore{
 		records: make([]LongTermMemoryRecord, 0),
 	}
+}
+
+type vectorLongTermMemoryStore struct {
+	store VectorStore
+}
+
+// NewVectorLongTermMemoryStore 创建一个基于根包 VectorStore 的长期记忆实现。
+func NewVectorLongTermMemoryStore(store VectorStore) LongTermMemoryStore {
+	return &vectorLongTermMemoryStore{store: store}
 }
 
 func (s *inMemoryLongTermMemoryStore) Store(ctx context.Context, records []LongTermMemoryRecord) error {
@@ -156,6 +173,112 @@ func (s *inMemoryLongTermMemoryStore) Close() error {
 	defer s.mu.Unlock()
 	s.records = nil
 	return nil
+}
+
+func (s *vectorLongTermMemoryStore) Store(ctx context.Context, records []LongTermMemoryRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s == nil || s.store == nil {
+		return fmt.Errorf("vector store is required")
+	}
+	if len(records) == 0 {
+		return nil
+	}
+
+	chunks := make([]ChunkRecord, 0, len(records))
+	for _, record := range records {
+		if record.ID == "" {
+			return fmt.Errorf("memory id is required")
+		}
+		if record.SessionID == "" {
+			return fmt.Errorf("memory session id is required")
+		}
+		if len(record.Embedding) == 0 {
+			return fmt.Errorf("memory embedding is required")
+		}
+		chunks = append(chunks, ChunkRecord{
+			ChunkID:    record.ID,
+			ParentID:   record.ID,
+			SourcePath: longTermMemorySourcePath(record.SessionID),
+			Title:      "long_term_memory",
+			Text:       strings.TrimSpace(record.User) + "\n" + strings.TrimSpace(record.Assistant),
+			StartRune:  0,
+			EndRune:    len([]rune(strings.TrimSpace(record.User) + "\n" + strings.TrimSpace(record.Assistant))),
+			Metadata: map[string]string{
+				longTermMemoryMetadataUserKey:  record.User,
+				longTermMemoryMetadataReplyKey: record.Assistant,
+				longTermMemoryMetadataTimeKey:  record.CreatedAt.Format(time.RFC3339Nano),
+			},
+			Embedding: slices.Clone(record.Embedding),
+		})
+	}
+	return s.store.Upsert(ctx, chunks)
+}
+
+func (s *vectorLongTermMemoryStore) Search(ctx context.Context, sessionID string, queryEmbedding []float32, topK int, threshold float32) ([]LongTermMemoryHit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("vector store is required")
+	}
+	if topK <= 0 || len(queryEmbedding) == 0 || strings.TrimSpace(sessionID) == "" {
+		return nil, nil
+	}
+
+	hits, err := s.store.SearchWithFilter(ctx, queryEmbedding, topK, threshold, SearchFilter{
+		SourcePaths: []string{longTermMemorySourcePath(sessionID)},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	records := make([]LongTermMemoryHit, 0, len(hits))
+	for _, hit := range hits {
+		record := LongTermMemoryRecord{
+			ID:        hit.Chunk.ChunkID,
+			SessionID: sessionID,
+			User:      hit.Chunk.Metadata[longTermMemoryMetadataUserKey],
+			Assistant: hit.Chunk.Metadata[longTermMemoryMetadataReplyKey],
+			Embedding: slices.Clone(hit.Chunk.Embedding),
+		}
+		if ts := hit.Chunk.Metadata[longTermMemoryMetadataTimeKey]; ts != "" {
+			createdAt, parseErr := time.Parse(time.RFC3339Nano, ts)
+			if parseErr == nil {
+				record.CreatedAt = createdAt
+			}
+		}
+		records = append(records, LongTermMemoryHit{
+			Memory: record,
+			Score:  hit.Score,
+		})
+	}
+	return records, nil
+}
+
+func (s *vectorLongTermMemoryStore) ClearSession(ctx context.Context, sessionID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s == nil || s.store == nil {
+		return fmt.Errorf("vector store is required")
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	return s.store.DeleteBySourcePaths(ctx, []string{longTermMemorySourcePath(sessionID)})
+}
+
+func (s *vectorLongTermMemoryStore) Close() error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	return s.store.Close()
+}
+
+func longTermMemorySourcePath(sessionID string) string {
+	return longTermMemorySourcePrefix + strings.TrimSpace(sessionID)
 }
 
 func cosineSimilarity(a []float32, b []float32) (float32, bool) {

@@ -15,11 +15,48 @@ type ProviderPricingConfig struct {
 	WebSearchPerCallUSD float64
 }
 
+// ProviderRateLimitConfig 定义 provider 级本地限流配置。
+type ProviderRateLimitConfig struct {
+	RequestsPerSecond float64
+	Burst             int
+}
+
+func (c ProviderRateLimitConfig) normalized() ProviderRateLimitConfig {
+	if c.RequestsPerSecond > 0 && c.Burst == 0 {
+		c.Burst = 1
+	}
+	return c
+}
+
+func (c ProviderRateLimitConfig) enabled() bool {
+	return c.RequestsPerSecond > 0
+}
+
+// ProviderCircuitBreakerConfig 定义 provider 级断路器配置。
+type ProviderCircuitBreakerConfig struct {
+	FailureThreshold int
+	OpenTimeout      time.Duration
+	HalfOpenMaxCalls int
+}
+
+func (c ProviderCircuitBreakerConfig) normalized() ProviderCircuitBreakerConfig {
+	if c.enabled() && c.HalfOpenMaxCalls == 0 {
+		c.HalfOpenMaxCalls = 1
+	}
+	return c
+}
+
+func (c ProviderCircuitBreakerConfig) enabled() bool {
+	return c.FailureThreshold > 0 || c.OpenTimeout > 0 || c.HalfOpenMaxCalls > 0
+}
+
 // ProviderGovernanceConfig 定义 provider 级治理配置。
 type ProviderGovernanceConfig struct {
 	RetryMaxAttempts int
 	RetryBaseDelay   time.Duration
 	RetryMaxDelay    time.Duration
+	RateLimit        ProviderRateLimitConfig
+	CircuitBreaker   ProviderCircuitBreakerConfig
 	Pricing          ProviderPricingConfig
 }
 
@@ -33,6 +70,8 @@ func (c ProviderGovernanceConfig) normalized() ProviderGovernanceConfig {
 	if c.RetryMaxDelay == 0 {
 		c.RetryMaxDelay = 2 * time.Second
 	}
+	c.RateLimit = c.RateLimit.normalized()
+	c.CircuitBreaker = c.CircuitBreaker.normalized()
 	return c
 }
 

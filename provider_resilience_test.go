@@ -41,6 +41,46 @@ func (m *flakyChatModel) Stream(_ context.Context, _ []llm.Message, emit func(st
 	return emit(m.answer)
 }
 
+type sequencedChatModel struct {
+	generateCalls int
+	answer        string
+	errs          []error
+}
+
+func (m *sequencedChatModel) Generate(context.Context, []llm.Message) (llm.Message, error) {
+	call := m.generateCalls
+	m.generateCalls++
+	if call < len(m.errs) && m.errs[call] != nil {
+		return llm.Message{}, m.errs[call]
+	}
+	return llm.Message{
+		Role:    llm.RoleAssistant,
+		Content: m.answer,
+	}, nil
+}
+
+func (m *sequencedChatModel) Stream(_ context.Context, _ []llm.Message, emit func(string) error) error {
+	return emit(m.answer)
+}
+
+type sequencedEmbedder struct {
+	calls int
+	errs  []error
+}
+
+func (e *sequencedEmbedder) EmbedTexts(_ context.Context, texts []string) ([][]float32, error) {
+	call := e.calls
+	e.calls++
+	if call < len(e.errs) && e.errs[call] != nil {
+		return nil, e.errs[call]
+	}
+	rows := make([][]float32, 0, len(texts))
+	for range texts {
+		rows = append(rows, []float32{1})
+	}
+	return rows, nil
+}
+
 func TestProviderGovernanceConfig(t *testing.T) {
 	t.Parallel()
 
@@ -58,6 +98,35 @@ func TestProviderGovernanceConfig(t *testing.T) {
 			name: "invalid retry attempts",
 			cfg: ProviderGovernanceConfig{
 				RetryMaxAttempts: -1,
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "local rate limit defaults burst",
+			cfg: ProviderGovernanceConfig{
+				RateLimit: ProviderRateLimitConfig{
+					RequestsPerSecond: 10,
+					Burst:             0,
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "invalid circuit breaker threshold",
+			cfg: ProviderGovernanceConfig{
+				CircuitBreaker: ProviderCircuitBreakerConfig{
+					FailureThreshold: -1,
+				},
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "invalid circuit breaker open timeout",
+			cfg: ProviderGovernanceConfig{
+				CircuitBreaker: ProviderCircuitBreakerConfig{
+					FailureThreshold: 1,
+					OpenTimeout:      -1,
+				},
 			},
 			wantErr: ErrInvalidConfig,
 		},
@@ -86,6 +155,186 @@ func TestProviderGovernanceConfig(t *testing.T) {
 	}
 }
 
+func TestResilientChatModelCircuitBreakerFastFailsAndRecovers(t *testing.T) {
+	t.Parallel()
+
+	model := &sequencedChatModel{
+		answer: "answer",
+		errs:   []error{errors.New("503 provider unavailable")},
+	}
+	governance := ProviderGovernanceConfig{
+		RetryMaxAttempts: 1,
+		RetryBaseDelay:   time.Millisecond,
+		RetryMaxDelay:    5 * time.Millisecond,
+		CircuitBreaker: ProviderCircuitBreakerConfig{
+			FailureThreshold: 1,
+			OpenTimeout:      10 * time.Millisecond,
+			HalfOpenMaxCalls: 1,
+		},
+	}
+	governors := newProviderGovernors(governance, nil)
+	wrapped := newResilientChatModel(model, governance, governors.forProvider("openai"), "openai", "gpt-4o-mini")
+
+	_, err := wrapped.Generate(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "hello"}})
+	if err == nil {
+		t.Fatal("Generate() error = nil, want non-nil")
+	}
+	if model.generateCalls != 1 {
+		t.Fatalf("generate calls after first failure = %d, want 1", model.generateCalls)
+	}
+
+	_, err = wrapped.Generate(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "hello"}})
+	if !errors.Is(err, ErrProviderCircuitOpen) {
+		t.Fatalf("Generate() error = %v, want errors.Is(..., %v)", err, ErrProviderCircuitOpen)
+	}
+	if model.generateCalls != 1 {
+		t.Fatalf("generate calls after fast fail = %d, want 1", model.generateCalls)
+	}
+
+	time.Sleep(15 * time.Millisecond)
+
+	msg, err := wrapped.Generate(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "hello"}})
+	if err != nil {
+		t.Fatalf("Generate() after open timeout error = %v", err)
+	}
+	if msg.Content != "answer" {
+		t.Fatalf("Generate() content = %q, want %q", msg.Content, "answer")
+	}
+	if model.generateCalls != 2 {
+		t.Fatalf("generate calls after recovery = %d, want 2", model.generateCalls)
+	}
+}
+
+func TestResilientProviderGovernorSharedAcrossChatAndEmbedder(t *testing.T) {
+	t.Parallel()
+
+	embedder := &sequencedEmbedder{
+		errs: []error{errors.New("503 provider unavailable")},
+	}
+	chat := &sequencedChatModel{answer: "answer"}
+	governance := ProviderGovernanceConfig{
+		RetryMaxAttempts: 1,
+		RetryBaseDelay:   time.Millisecond,
+		RetryMaxDelay:    5 * time.Millisecond,
+		CircuitBreaker: ProviderCircuitBreakerConfig{
+			FailureThreshold: 1,
+			OpenTimeout:      10 * time.Second,
+			HalfOpenMaxCalls: 1,
+		},
+	}
+	governors := newProviderGovernors(governance, nil)
+	wrappedEmbedder := newResilientEmbedder(embedder, governance, governors.forProvider("openai"), "openai", "text-embedding-3-small")
+	wrappedChat := newResilientChatModel(chat, governance, governors.forProvider("openai"), "openai", "gpt-4o-mini")
+
+	if _, err := wrappedEmbedder.EmbedTexts(context.Background(), []string{"hello"}); err == nil {
+		t.Fatal("EmbedTexts() error = nil, want non-nil")
+	}
+	if embedder.calls != 1 {
+		t.Fatalf("embedder calls = %d, want 1", embedder.calls)
+	}
+	sharedGovernor := governors.forProvider("openai")
+	if sharedGovernor.circuitBreaker == nil {
+		t.Fatal("shared governor circuit breaker = nil")
+	}
+	if sharedGovernor != governors.forProvider("openai") {
+		t.Fatal("provider governors should return shared governor instance")
+	}
+	if sharedGovernor.circuitBreaker.state != providerCircuitStateOpen {
+		t.Fatalf("shared governor circuit state = %q, want %q", sharedGovernor.circuitBreaker.state, providerCircuitStateOpen)
+	}
+
+	_, err := wrappedChat.Generate(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "hello"}})
+	if !errors.Is(err, ErrProviderCircuitOpen) {
+		t.Fatalf("Generate() error = %v, want errors.Is(..., %v)", err, ErrProviderCircuitOpen)
+	}
+	if chat.generateCalls != 0 {
+		t.Fatalf("chat generate calls = %d, want 0", chat.generateCalls)
+	}
+}
+
+func TestResilientChatModelTraceIncludesThrottleDelayAndCircuitState(t *testing.T) {
+	t.Parallel()
+
+	model := &sequencedChatModel{answer: "answer"}
+	var traces []ProviderCallTrace
+	ctx := withProviderTraceObserver(context.Background(), func(call ProviderCallTrace) {
+		traces = append(traces, call)
+	})
+	governance := ProviderGovernanceConfig{
+		RetryMaxAttempts: 1,
+		RetryBaseDelay:   time.Millisecond,
+		RetryMaxDelay:    5 * time.Millisecond,
+		RateLimit: ProviderRateLimitConfig{
+			RequestsPerSecond: 100,
+			Burst:             1,
+		},
+	}
+	governors := newProviderGovernors(governance, nil)
+	wrapped := newResilientChatModel(model, governance, governors.forProvider("openai"), "openai", "gpt-4o-mini")
+
+	for range 2 {
+		if _, err := wrapped.Generate(ctx, []llm.Message{{Role: llm.RoleUser, Content: "hello"}}); err != nil {
+			t.Fatalf("Generate() error = %v", err)
+		}
+	}
+
+	if len(traces) != 2 {
+		t.Fatalf("provider traces len = %d, want 2", len(traces))
+	}
+	if traces[1].ThrottleDelay <= 0 {
+		t.Fatalf("second trace throttle delay = %v, want > 0", traces[1].ThrottleDelay)
+	}
+	if traces[1].CircuitState != providerCircuitStateClosed {
+		t.Fatalf("second trace circuit state = %q, want %q", traces[1].CircuitState, providerCircuitStateClosed)
+	}
+}
+
+func TestProviderCircuitBreakerLogsStateTransitions(t *testing.T) {
+	t.Parallel()
+
+	logger := &loggerStub{}
+	model := &sequencedChatModel{
+		answer: "answer",
+		errs:   []error{errors.New("503 provider unavailable")},
+	}
+	governance := ProviderGovernanceConfig{
+		RetryMaxAttempts: 1,
+		RetryBaseDelay:   time.Millisecond,
+		RetryMaxDelay:    5 * time.Millisecond,
+		CircuitBreaker: ProviderCircuitBreakerConfig{
+			FailureThreshold: 1,
+			OpenTimeout:      10 * time.Millisecond,
+			HalfOpenMaxCalls: 1,
+		},
+	}
+	governors := newProviderGovernors(governance, logger)
+	wrapped := newResilientChatModel(model, governance, governors.forProvider("openai"), "openai", "gpt-4o-mini")
+
+	if _, err := wrapped.Generate(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "hello"}}); err == nil {
+		t.Fatal("Generate() error = nil, want non-nil")
+	}
+
+	time.Sleep(15 * time.Millisecond)
+
+	if _, err := wrapped.Generate(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "hello"}}); err != nil {
+		t.Fatalf("Generate() after open timeout error = %v", err)
+	}
+
+	entries := logger.snapshot()
+	if len(entries) < 3 {
+		t.Fatalf("logger entries len = %d, want >= 3", len(entries))
+	}
+	if entries[0].msg != "ragagent provider circuit state changed" || entries[0].kv[5] != providerCircuitStateOpen {
+		t.Fatalf("first logger entry = %+v, want open transition", entries[0])
+	}
+	if entries[1].msg != "ragagent provider circuit state changed" || entries[1].kv[5] != providerCircuitStateHalfOpen {
+		t.Fatalf("second logger entry = %+v, want half-open transition", entries[1])
+	}
+	if entries[2].msg != "ragagent provider circuit state changed" || entries[2].kv[5] != providerCircuitStateClosed {
+		t.Fatalf("third logger entry = %+v, want closed transition", entries[2])
+	}
+}
+
 func TestResilientChatModelRetriesAndAggregatesUsage(t *testing.T) {
 	t.Parallel()
 
@@ -102,6 +351,16 @@ func TestResilientChatModelRetriesAndAggregatesUsage(t *testing.T) {
 	ctx := withProviderTraceObserver(context.Background(), func(call ProviderCallTrace) {
 		traces = append(traces, call)
 	})
+	governors := newProviderGovernors(ProviderGovernanceConfig{
+		RetryMaxAttempts: 2,
+		RetryBaseDelay:   time.Millisecond,
+		RetryMaxDelay:    5 * time.Millisecond,
+		Pricing: ProviderPricingConfig{
+			ChatModels: map[string]TokenPricing{
+				"gpt-4o-mini": {InputUSDPer1K: 0.01, OutputUSDPer1K: 0.02},
+			},
+		},
+	}, nil)
 	wrapped := newResilientChatModel(model, ProviderGovernanceConfig{
 		RetryMaxAttempts: 2,
 		RetryBaseDelay:   time.Millisecond,
@@ -111,7 +370,7 @@ func TestResilientChatModelRetriesAndAggregatesUsage(t *testing.T) {
 				"gpt-4o-mini": {InputUSDPer1K: 0.01, OutputUSDPer1K: 0.02},
 			},
 		},
-	}, "openai", "gpt-4o-mini")
+	}, governors.forProvider("openai"), "openai", "gpt-4o-mini")
 
 	msg, err := wrapped.Generate(ctx, []llm.Message{{Role: llm.RoleUser, Content: "hello"}})
 	if err != nil {
@@ -141,11 +400,16 @@ func TestResilientChatModelStreamDoesNotRetryAfterChunk(t *testing.T) {
 	t.Parallel()
 
 	model := &flakyChatModel{streamFail: true}
+	governors := newProviderGovernors(ProviderGovernanceConfig{
+		RetryMaxAttempts: 2,
+		RetryBaseDelay:   time.Millisecond,
+		RetryMaxDelay:    5 * time.Millisecond,
+	}, nil)
 	wrapped := newResilientChatModel(model, ProviderGovernanceConfig{
 		RetryMaxAttempts: 2,
 		RetryBaseDelay:   time.Millisecond,
 		RetryMaxDelay:    5 * time.Millisecond,
-	}, "openai", "gpt-4o-mini")
+	}, governors.forProvider("openai"), "openai", "gpt-4o-mini")
 
 	err := wrapped.Stream(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "hello"}}, func(string) error { return nil })
 	if err == nil {

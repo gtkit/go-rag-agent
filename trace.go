@@ -23,6 +23,8 @@ type ProviderCallTrace struct {
 	Model            string
 	Attempts         int
 	Duration         time.Duration
+	ThrottleDelay    time.Duration
+	CircuitState     string
 	ErrorClass       string
 	InputTokens      int
 	OutputTokens     int
@@ -48,6 +50,7 @@ type ExecutionTrace struct {
 	ToolCalls             []ToolTrace
 	ProviderCalls         []ProviderCallTrace
 	TotalEstimatedCostUSD float64
+	PromptCacheHit        bool
 	Fallbacks             []FallbackEvent
 	Citations             []Citation
 }
@@ -132,6 +135,13 @@ func (b *executionTraceBuilder) addProviderCall(call ProviderCallTrace) {
 	}
 	b.trace.ProviderCalls = append(b.trace.ProviderCalls, call)
 	b.trace.TotalEstimatedCostUSD += call.EstimatedCostUSD
+}
+
+func (b *executionTraceBuilder) setPromptCacheHit(hit bool) {
+	if b == nil {
+		return
+	}
+	b.trace.PromptCacheHit = b.trace.PromptCacheHit || hit
 }
 
 func (b *executionTraceBuilder) finish(err error) ExecutionTrace {

@@ -21,22 +21,25 @@ const (
 	providerErrorClassAuth      = "auth"
 	providerErrorClassTransient = "transient"
 	providerErrorClassPermanent = "permanent"
+	providerErrorClassCircuit   = "circuit_open"
 )
 
 type resilientChatModel struct {
 	inner      llm.ChatModel
 	governance ProviderGovernanceConfig
+	governor   *providerGovernor
 	provider   string
 	model      string
 }
 
-func newResilientChatModel(inner llm.ChatModel, governance ProviderGovernanceConfig, providerName string, model string) llm.ChatModel {
+func newResilientChatModel(inner llm.ChatModel, governance ProviderGovernanceConfig, governor *providerGovernor, providerName string, model string) llm.ChatModel {
 	if inner == nil {
 		return nil
 	}
 	return &resilientChatModel{
 		inner:      inner,
 		governance: governance.normalized(),
+		governor:   governor,
 		provider:   providerName,
 		model:      model,
 	}
@@ -48,10 +51,33 @@ func (m *resilientChatModel) Generate(ctx context.Context, input []llm.Message) 
 		attempts int
 		started  = time.Now()
 		message  llm.Message
+		throttle time.Duration
+		state    string
 	)
 	for attempts = 1; attempts <= m.governance.RetryMaxAttempts; attempts++ {
+		handle, err := m.governor.acquire(ctx)
+		throttle += handle.ThrottleDelay
+		state = handle.CircuitState
+		if err != nil {
+			lastErr = err
+			class := classifyProviderError(lastErr, m.provider)
+			emitProviderTrace(ctx, ProviderCallTrace{
+				Provider:         m.provider,
+				Operation:        "chat_generate",
+				Model:            m.model,
+				Attempts:         attempts,
+				Duration:         time.Since(started),
+				ThrottleDelay:    throttle,
+				CircuitState:     state,
+				ErrorClass:       class,
+				EstimatedCostUSD: 0,
+				Err:              lastErr,
+			})
+			return llm.Message{}, lastErr
+		}
 		message, lastErr = m.inner.Generate(ctx, input)
 		class := classifyProviderError(lastErr, m.provider)
+		handle.finish(class)
 		if lastErr == nil || !shouldRetryProviderError(class) || attempts == m.governance.RetryMaxAttempts {
 			usage := generationInfoUsage(message.GenerationInfo)
 			emitProviderTrace(ctx, ProviderCallTrace{
@@ -60,6 +86,8 @@ func (m *resilientChatModel) Generate(ctx context.Context, input []llm.Message) 
 				Model:            m.model,
 				Attempts:         attempts,
 				Duration:         time.Since(started),
+				ThrottleDelay:    throttle,
+				CircuitState:     state,
 				ErrorClass:       class,
 				InputTokens:      usage.PromptTokens,
 				OutputTokens:     usage.CompletionTokens,
@@ -82,9 +110,29 @@ func (m *resilientChatModel) Stream(ctx context.Context, input []llm.Message, em
 		attempts  int
 		started   = time.Now()
 		chunkSeen bool
+		throttle  time.Duration
+		state     string
 	)
 	for attempts = 1; attempts <= m.governance.RetryMaxAttempts; attempts++ {
 		chunkSeen = false
+		handle, err := m.governor.acquire(ctx)
+		throttle += handle.ThrottleDelay
+		state = handle.CircuitState
+		if err != nil {
+			lastErr = err
+			emitProviderTrace(ctx, ProviderCallTrace{
+				Provider:      m.provider,
+				Operation:     "chat_stream",
+				Model:         m.model,
+				Attempts:      attempts,
+				Duration:      time.Since(started),
+				ThrottleDelay: throttle,
+				CircuitState:  state,
+				ErrorClass:    classifyProviderError(lastErr, m.provider),
+				Err:           lastErr,
+			})
+			return lastErr
+		}
 		lastErr = m.inner.Stream(ctx, input, func(chunk string) error {
 			if strings.TrimSpace(chunk) != "" {
 				chunkSeen = true
@@ -92,15 +140,18 @@ func (m *resilientChatModel) Stream(ctx context.Context, input []llm.Message, em
 			return emit(chunk)
 		})
 		class := classifyProviderError(lastErr, m.provider)
+		handle.finish(class)
 		if lastErr == nil || chunkSeen || !shouldRetryProviderError(class) || attempts == m.governance.RetryMaxAttempts {
 			emitProviderTrace(ctx, ProviderCallTrace{
-				Provider:   m.provider,
-				Operation:  "chat_stream",
-				Model:      m.model,
-				Attempts:   attempts,
-				Duration:   time.Since(started),
-				ErrorClass: class,
-				Err:        lastErr,
+				Provider:      m.provider,
+				Operation:     "chat_stream",
+				Model:         m.model,
+				Attempts:      attempts,
+				Duration:      time.Since(started),
+				ThrottleDelay: throttle,
+				CircuitState:  state,
+				ErrorClass:    class,
+				Err:           lastErr,
 			})
 			return lastErr
 		}
@@ -114,17 +165,19 @@ func (m *resilientChatModel) Stream(ctx context.Context, input []llm.Message, em
 type resilientEmbedder struct {
 	inner      llm.Embedder
 	governance ProviderGovernanceConfig
+	governor   *providerGovernor
 	provider   string
 	model      string
 }
 
-func newResilientEmbedder(inner llm.Embedder, governance ProviderGovernanceConfig, providerName string, model string) llm.Embedder {
+func newResilientEmbedder(inner llm.Embedder, governance ProviderGovernanceConfig, governor *providerGovernor, providerName string, model string) llm.Embedder {
 	if inner == nil {
 		return nil
 	}
 	return &resilientEmbedder{
 		inner:      inner,
 		governance: governance.normalized(),
+		governor:   governor,
 		provider:   providerName,
 		model:      model,
 	}
@@ -136,10 +189,32 @@ func (e *resilientEmbedder) EmbedTexts(ctx context.Context, texts []string) ([][
 		attempts int
 		rows     [][]float32
 		started  = time.Now()
+		throttle time.Duration
+		state    string
 	)
 	for attempts = 1; attempts <= e.governance.RetryMaxAttempts; attempts++ {
+		handle, err := e.governor.acquire(ctx)
+		throttle += handle.ThrottleDelay
+		state = handle.CircuitState
+		if err != nil {
+			lastErr = err
+			class := classifyProviderError(lastErr, e.provider)
+			emitProviderTrace(ctx, ProviderCallTrace{
+				Provider:      e.provider,
+				Operation:     "embed_texts",
+				Model:         e.model,
+				Attempts:      attempts,
+				Duration:      time.Since(started),
+				ThrottleDelay: throttle,
+				CircuitState:  state,
+				ErrorClass:    class,
+				Err:           lastErr,
+			})
+			return nil, lastErr
+		}
 		rows, lastErr = e.inner.EmbedTexts(ctx, texts)
 		class := classifyProviderError(lastErr, e.provider)
+		handle.finish(class)
 		if lastErr == nil || !shouldRetryProviderError(class) || attempts == e.governance.RetryMaxAttempts {
 			inputTokens := 0
 			for _, text := range texts {
@@ -151,6 +226,8 @@ func (e *resilientEmbedder) EmbedTexts(ctx context.Context, texts []string) ([][
 				Model:            e.model,
 				Attempts:         attempts,
 				Duration:         time.Since(started),
+				ThrottleDelay:    throttle,
+				CircuitState:     state,
 				ErrorClass:       class,
 				InputTokens:      inputTokens,
 				TotalTokens:      inputTokens,
@@ -169,16 +246,18 @@ func (e *resilientEmbedder) EmbedTexts(ctx context.Context, texts []string) ([][
 type resilientSearcher struct {
 	inner      websearch.Searcher
 	governance ProviderGovernanceConfig
+	governor   *providerGovernor
 	provider   string
 }
 
-func newResilientSearcher(inner websearch.Searcher, governance ProviderGovernanceConfig, providerName string) websearch.Searcher {
+func newResilientSearcher(inner websearch.Searcher, governance ProviderGovernanceConfig, governor *providerGovernor, providerName string) websearch.Searcher {
 	if inner == nil {
 		return nil
 	}
 	return &resilientSearcher{
 		inner:      inner,
 		governance: governance.normalized(),
+		governor:   governor,
 		provider:   providerName,
 	}
 }
@@ -189,16 +268,38 @@ func (s *resilientSearcher) Search(ctx context.Context, query string) ([]websear
 		attempts int
 		results  []websearch.Result
 		started  = time.Now()
+		throttle time.Duration
+		state    string
 	)
 	for attempts = 1; attempts <= s.governance.RetryMaxAttempts; attempts++ {
+		handle, err := s.governor.acquire(ctx)
+		throttle += handle.ThrottleDelay
+		state = handle.CircuitState
+		if err != nil {
+			lastErr = err
+			emitProviderTrace(ctx, ProviderCallTrace{
+				Provider:      s.provider,
+				Operation:     "web_search",
+				Attempts:      attempts,
+				Duration:      time.Since(started),
+				ThrottleDelay: throttle,
+				CircuitState:  state,
+				ErrorClass:    classifyProviderError(lastErr, s.provider),
+				Err:           lastErr,
+			})
+			return nil, lastErr
+		}
 		results, lastErr = s.inner.Search(ctx, query)
 		class := classifyProviderError(lastErr, s.provider)
+		handle.finish(class)
 		if lastErr == nil || !shouldRetryProviderError(class) || attempts == s.governance.RetryMaxAttempts {
 			emitProviderTrace(ctx, ProviderCallTrace{
 				Provider:         s.provider,
 				Operation:        "web_search",
 				Attempts:         attempts,
 				Duration:         time.Since(started),
+				ThrottleDelay:    throttle,
+				CircuitState:     state,
 				ErrorClass:       class,
 				EstimatedCostUSD: s.governance.Pricing.WebSearchPerCallUSD,
 				Err:              lastErr,
@@ -259,6 +360,9 @@ func estimateEmbeddingCost(cfg ProviderGovernanceConfig, model string, inputToke
 func classifyProviderError(err error, providerName string) string {
 	if err == nil {
 		return ""
+	}
+	if errors.Is(err, ErrProviderCircuitOpen) {
+		return providerErrorClassCircuit
 	}
 	if errors.Is(err, context.Canceled) {
 		return "canceled"

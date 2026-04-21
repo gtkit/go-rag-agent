@@ -84,6 +84,59 @@ func (f *fakeStore) DeleteBySourcePaths(_ context.Context, sourcePaths []string)
 
 func (f *fakeStore) Close() error { return nil }
 
+type capturingRootVectorStoreStub struct {
+	mu      sync.Mutex
+	upserts [][]ChunkRecord
+	hits    []SearchHit
+}
+
+func (s *capturingRootVectorStoreStub) Upsert(_ context.Context, chunks []ChunkRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.upserts = append(s.upserts, slices.Clone(chunks))
+	return nil
+}
+
+func (s *capturingRootVectorStoreStub) Search(_ context.Context, _ []float32, topK int, threshold float32) ([]SearchHit, error) {
+	return s.SearchWithFilter(context.Background(), nil, topK, threshold, SearchFilter{})
+}
+
+func (s *capturingRootVectorStoreStub) SearchWithFilter(_ context.Context, _ []float32, topK int, threshold float32, filter SearchFilter) ([]SearchHit, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	filtered := make([]SearchHit, 0, len(s.hits))
+	for _, hit := range s.hits {
+		if hit.Score < threshold {
+			continue
+		}
+		if len(filter.SourcePaths) > 0 && !slices.Contains(filter.SourcePaths, hit.Chunk.SourcePath) {
+			continue
+		}
+		matched := true
+		for key, value := range filter.Metadata {
+			if hit.Chunk.Metadata[key] != value {
+				matched = false
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		filtered = append(filtered, hit)
+	}
+	if topK > 0 && len(filtered) > topK {
+		filtered = filtered[:topK]
+	}
+	return filtered, nil
+}
+
+func (s *capturingRootVectorStoreStub) DeleteBySourcePaths(_ context.Context, _ []string) error {
+	return nil
+}
+
+func (s *capturingRootVectorStoreStub) Close() error { return nil }
+
 func filterHitsForTest(hits []storage.SearchHit, filter storage.SearchFilter, topK int, threshold float32) []storage.SearchHit {
 	if len(hits) == 0 {
 		return nil
@@ -160,6 +213,254 @@ type fakeRunner struct {
 	answer  string
 	err     error
 	lastReq graph.Request
+}
+
+type fakeRootRetriever struct {
+	hits []SearchHit
+	err  error
+	reqs []RetrieverRequest
+	mu   sync.Mutex
+}
+
+func (f *fakeRootRetriever) Search(ctx context.Context, req RetrieverRequest) ([]SearchHit, error) {
+	hits, _, _, err := f.SearchDetailed(ctx, req)
+	return hits, err
+}
+
+func (f *fakeRootRetriever) SearchDetailed(_ context.Context, req RetrieverRequest) ([]SearchHit, RetrievalMetrics, []FallbackEvent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reqs = append(f.reqs, req)
+	return slices.Clone(f.hits), RetrievalMetrics{}, nil, f.err
+}
+
+func TestAskUsesInjectedRetriever(t *testing.T) {
+	t.Parallel()
+
+	customRetriever := &fakeRootRetriever{
+		hits: []SearchHit{
+			{
+				Chunk: ChunkRecord{
+					ChunkID:    "custom:0",
+					ParentID:   "custom",
+					SourcePath: "/custom/doc.md",
+					Title:      "custom",
+					Text:       "custom retriever evidence",
+					StartRune:  0,
+					EndRune:    25,
+				},
+				Score: 0.99,
+			},
+		},
+	}
+	a, err := New(Config{
+		ChatModel: "gpt-4o-mini",
+		Runtime: RuntimeComponents{
+			ChatModel: stubRuntimeChatModel{},
+			Embedder:  stubRuntimeEmbedder{},
+		},
+		Retrieval: RetrievalComponents{
+			Retriever: customRetriever,
+		},
+		TopK:             1,
+		ChunkSize:        64,
+		ChunkOverlap:     0,
+		MaxHistoryRounds: 8,
+		RequestTimeout:   time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := a.Close(); cerr != nil {
+			t.Fatalf("Close() error = %v", cerr)
+		}
+	})
+
+	answer, err := a.GetSession("custom-retriever").Ask(context.Background(), "what changed")
+	if err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+	if answer.Text == "" {
+		t.Fatal("Ask() returned empty text")
+	}
+
+	customRetriever.mu.Lock()
+	defer customRetriever.mu.Unlock()
+	if len(customRetriever.reqs) != 1 {
+		t.Fatalf("custom retriever requests = %d, want 1", len(customRetriever.reqs))
+	}
+	if customRetriever.reqs[0].Query == "" {
+		t.Fatal("custom retriever query is empty")
+	}
+}
+
+func TestAskTraceCapturesPromptCacheHit(t *testing.T) {
+	t.Parallel()
+
+	cache := NewInMemoryPromptCache()
+	a, err := New(Config{
+		ChatModel: "gpt-4o-mini",
+		Runtime: RuntimeComponents{
+			ChatModel: stubRuntimeChatModel{},
+			Embedder:  stubRuntimeEmbedder{},
+		},
+		Storage: StorageComponents{
+			VectorStore: &injectedVectorStoreStub{
+				searchHits: []SearchHit{
+					{
+						Chunk: ChunkRecord{
+							ChunkID:    "doc:0",
+							ParentID:   "doc",
+							SourcePath: "/tmp/doc.md",
+							Title:      "doc",
+							Text:       "prompt cache evidence",
+							StartRune:  0,
+							EndRune:    21,
+						},
+						Score: 0.99,
+					},
+				},
+			},
+		},
+		PromptCache:      cache,
+		TopK:             1,
+		ChunkSize:        64,
+		ChunkOverlap:     0,
+		MaxHistoryRounds: 8,
+		RequestTimeout:   time.Second,
+		TraceRecorder:    &traceRecorderStub{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := a.Close(); cerr != nil {
+			t.Fatalf("Close() error = %v", cerr)
+		}
+	})
+
+	session := a.GetSession("prompt-cache")
+	if _, err := session.Ask(context.Background(), "same question"); err != nil {
+		t.Fatalf("first Ask() error = %v", err)
+	}
+	if err := session.ClearHistory(context.Background()); err != nil {
+		t.Fatalf("ClearHistory() error = %v", err)
+	}
+	answer, err := session.Ask(context.Background(), "same question")
+	if err != nil {
+		t.Fatalf("second Ask() error = %v", err)
+	}
+	if answer.Trace == nil {
+		t.Fatal("Answer.Trace = nil")
+	}
+	if !answer.Trace.PromptCacheHit {
+		t.Fatal("Answer.Trace.PromptCacheHit = false, want true")
+	}
+}
+
+func TestAddKnowledgeAppliesAccessBoundaryNamespace(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	path := root + "/knowledge.md"
+	if err := os.WriteFile(path, []byte("# Doc\n\nnamespaced content"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", path, err)
+	}
+
+	store := &capturingRootVectorStoreStub{}
+	a, err := New(Config{
+		Runtime: RuntimeComponents{
+			ChatModel: stubRuntimeChatModel{},
+			Embedder:  stubRuntimeEmbedder{},
+		},
+		Storage: StorageComponents{
+			VectorStore: store,
+		},
+		AccessBoundary: AccessBoundaryConfig{
+			Namespace: "tenant-a",
+		},
+		TopK:             1,
+		ChunkSize:        64,
+		ChunkOverlap:     0,
+		MaxHistoryRounds: 8,
+		RequestTimeout:   time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := a.Close(); cerr != nil {
+			t.Fatalf("Close() error = %v", cerr)
+		}
+	})
+
+	if err := a.AddKnowledge(context.Background(), FileSource(path)); err != nil {
+		t.Fatalf("AddKnowledge() error = %v", err)
+	}
+	if len(store.upserts) == 0 || len(store.upserts[0]) == 0 {
+		t.Fatal("upsert batches are empty")
+	}
+	if got := store.upserts[0][0].Metadata[accessBoundaryNamespaceKey]; got != "tenant-a" {
+		t.Fatalf("stored namespace metadata = %q, want %q", got, "tenant-a")
+	}
+}
+
+func TestAskAppliesAccessBoundarySourcePaths(t *testing.T) {
+	t.Parallel()
+
+	a, err := New(Config{
+		ChatModel: "gpt-4o-mini",
+		Runtime: RuntimeComponents{
+			ChatModel: stubRuntimeChatModel{},
+			Embedder:  stubRuntimeEmbedder{},
+		},
+		Storage: StorageComponents{
+			VectorStore: &capturingRootVectorStoreStub{
+				hits: []SearchHit{
+					{
+						Chunk: ChunkRecord{
+							ChunkID:    "doc:0",
+							ParentID:   "doc",
+							SourcePath: "/tenant-a/doc.md",
+							Title:      "doc",
+							Text:       "tenant evidence",
+							StartRune:  0,
+							EndRune:    15,
+							Metadata:   map[string]string{accessBoundaryNamespaceKey: "tenant-a"},
+						},
+						Score: 0.99,
+					},
+				},
+			},
+		},
+		AccessBoundary: AccessBoundaryConfig{
+			Namespace:          "tenant-a",
+			AllowedSourcePaths: []string{"/tenant-a/doc.md"},
+		},
+		TopK:             1,
+		ChunkSize:        64,
+		ChunkOverlap:     0,
+		MaxHistoryRounds: 8,
+		RequestTimeout:   time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := a.Close(); cerr != nil {
+			t.Fatalf("Close() error = %v", cerr)
+		}
+	})
+
+	_, err = a.GetSession("tenant-boundary").AskWithOptions(context.Background(), "question", QueryOptions{
+		Filter: RetrievalFilter{
+			SourcePaths: []string{"/tenant-b/doc.md"},
+		},
+	})
+	if !errors.Is(err, ErrEvidenceInsufficient) {
+		t.Fatalf("AskWithOptions() error = %v, want errors.Is(..., %v)", err, ErrEvidenceInsufficient)
+	}
 }
 
 func (f *fakeRunner) Ask(_ context.Context, req graph.Request) (string, error) {

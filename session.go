@@ -288,7 +288,7 @@ func (a *Agent) AddKnowledge(ctx context.Context, src KnowledgeSource) error {
 				Text:       chunk.Text,
 				StartRune:  chunk.StartRune,
 				EndRune:    chunk.EndRune,
-				Metadata:   chunk.Metadata,
+				Metadata:   applyNamespaceMetadata(chunk.Metadata, a.cfg.AccessBoundary.Namespace),
 				Embedding:  embeddings[i],
 			})
 		}

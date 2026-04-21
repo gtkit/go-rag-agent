@@ -2,7 +2,10 @@ package graph
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gtkit/go-rag-agent/internal/llm"
@@ -81,6 +84,28 @@ func (r *ChatRunner) AskStream(ctx context.Context, req Request, emit StreamEmit
 }
 
 func (r *ChatRunner) messagesForRequest(ctx context.Context, req Request) ([]llm.Message, error) {
+	if req.PromptCache != nil {
+		key := promptCacheKey(req)
+		if cached, ok := req.PromptCache.Get(ctx, key); ok {
+			if req.PromptCacheObserver != nil {
+				req.PromptCacheObserver(true)
+			}
+			return cached, nil
+		}
+		msgs, err := r.messagesForRequestUncached(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		req.PromptCache.Set(ctx, key, msgs)
+		if req.PromptCacheObserver != nil {
+			req.PromptCacheObserver(false)
+		}
+		return msgs, nil
+	}
+	return r.messagesForRequestUncached(ctx, req)
+}
+
+func (r *ChatRunner) messagesForRequestUncached(ctx context.Context, req Request) ([]llm.Message, error) {
 	msgs := buildPromptMessages(
 		req.History,
 		req.EvidenceText,
@@ -147,4 +172,37 @@ func (r *ChatRunner) messagesForRequest(ctx context.Context, req Request) ([]llm
 		return nil, fmt.Errorf("run fallback tools: %w", lastErr)
 	}
 	return nil, fmt.Errorf("no fallback tool produced evidence")
+}
+
+func promptCacheKey(req Request) string {
+	var builder strings.Builder
+	builder.WriteString(req.Query)
+	builder.WriteString("\n--evidence--\n")
+	builder.WriteString(req.EvidenceText)
+	builder.WriteString("\n--memory--\n")
+	builder.WriteString(req.LongTermMemoryText)
+	builder.WriteString("\n--summary--\n")
+	builder.WriteString(req.ConversationSummary)
+	builder.WriteString("\n--format--\n")
+	builder.WriteString(req.ResponseFormatInstruction)
+	builder.WriteString("\n--limits--\n")
+	builder.WriteString(strconv.Itoa(req.MaxPromptTokens))
+	builder.WriteByte('|')
+	builder.WriteString(strconv.Itoa(req.MaxHistoryTokens))
+	builder.WriteByte('|')
+	builder.WriteString(strconv.Itoa(req.MaxEvidenceTokens))
+	builder.WriteByte('|')
+	builder.WriteString(strconv.Itoa(req.MaxMemoryTokens))
+	builder.WriteByte('|')
+	builder.WriteString(strconv.Itoa(req.MaxSummaryTokens))
+	builder.WriteByte('|')
+	builder.WriteString(strconv.FormatBool(req.EnablePromptHardening))
+	for _, turn := range req.History {
+		builder.WriteString("\n--turn--\n")
+		builder.WriteString(turn.User)
+		builder.WriteString("\n--assistant--\n")
+		builder.WriteString(turn.Assistant)
+	}
+	sum := sha256.Sum256([]byte(builder.String()))
+	return hex.EncodeToString(sum[:])
 }

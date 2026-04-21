@@ -41,6 +41,7 @@ type Config struct {
 	MaxSummaryTokens          int
 	MaxMemoryTokens           int
 	EnablePromptHardening     bool
+	AccessBoundary            AccessBoundaryConfig
 	EnableHybridSearch        bool
 	EnableRerank              bool
 	EnableWebSearch           bool
@@ -48,9 +49,11 @@ type Config struct {
 	HybridRRFK                float64
 	RerankShortlistMultiplier int
 	Runtime                   RuntimeComponents
+	Retrieval                 RetrievalComponents
 	Storage                   StorageComponents
 	Memory                    MemoryComponents
 	ProviderGovernance        ProviderGovernanceConfig
+	PromptCache               PromptCache
 	ToolRegistry              *ToolRegistry
 	PDFOCRBridge              PDFOCRBridgeConfig
 	WebSearch                 WebSearchConfig
@@ -126,6 +129,7 @@ func (c Config) normalized() Config {
 	c.PDFOCRBridge = c.PDFOCRBridge.normalized()
 	c.WebSearch = c.WebSearch.normalized()
 	c.ProviderGovernance = c.ProviderGovernance.normalized()
+	c.AccessBoundary = c.AccessBoundary.normalized()
 	return c
 }
 
@@ -206,6 +210,35 @@ func (c Config) Validate() error {
 	}
 	if c.ProviderGovernance.RetryMaxDelay <= 0 {
 		return fmt.Errorf("provider retry max delay must be positive: %w", ErrInvalidConfig)
+	}
+	if c.ProviderGovernance.RateLimit.RequestsPerSecond < 0 {
+		return fmt.Errorf("provider rate limit requests per second must be non-negative: %w", ErrInvalidConfig)
+	}
+	if c.ProviderGovernance.RateLimit.Burst < 0 {
+		return fmt.Errorf("provider rate limit burst must be non-negative: %w", ErrInvalidConfig)
+	}
+	if !c.ProviderGovernance.RateLimit.enabled() && c.ProviderGovernance.RateLimit.Burst > 0 {
+		return fmt.Errorf("provider rate limit burst requires requests per second: %w", ErrInvalidConfig)
+	}
+	if c.ProviderGovernance.RateLimit.enabled() && c.ProviderGovernance.RateLimit.Burst <= 0 {
+		return fmt.Errorf("provider rate limit burst must be positive when enabled: %w", ErrInvalidConfig)
+	}
+	if c.ProviderGovernance.CircuitBreaker.FailureThreshold < 0 {
+		return fmt.Errorf("provider circuit breaker failure threshold must be non-negative: %w", ErrInvalidConfig)
+	}
+	if c.ProviderGovernance.CircuitBreaker.OpenTimeout < 0 {
+		return fmt.Errorf("provider circuit breaker open timeout must be non-negative: %w", ErrInvalidConfig)
+	}
+	if c.ProviderGovernance.CircuitBreaker.HalfOpenMaxCalls < 0 {
+		return fmt.Errorf("provider circuit breaker half-open max calls must be non-negative: %w", ErrInvalidConfig)
+	}
+	if c.ProviderGovernance.CircuitBreaker.enabled() {
+		if c.ProviderGovernance.CircuitBreaker.FailureThreshold <= 0 {
+			return fmt.Errorf("provider circuit breaker failure threshold must be positive when enabled: %w", ErrInvalidConfig)
+		}
+		if c.ProviderGovernance.CircuitBreaker.OpenTimeout <= 0 {
+			return fmt.Errorf("provider circuit breaker open timeout must be positive when enabled: %w", ErrInvalidConfig)
+		}
 	}
 	if c.MaxIterations <= 0 {
 		return fmt.Errorf("max iterations must be positive: %w", ErrInvalidConfig)

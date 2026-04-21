@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gtkit/pgorm"
 )
 
 func TestPGVectorStoreConfigValidate(t *testing.T) {
@@ -47,6 +49,31 @@ func TestPGVectorStoreConfigValidate(t *testing.T) {
 			cfg: PGVectorStoreConfig{
 				ConnString: "postgres://user:pass@127.0.0.1:5432/dbname?sslmode=disable",
 				TableName:  "knowledge_chunks",
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "valid pgorm config",
+			cfg: PGVectorStoreConfig{
+				PGORMConfig: ptr(pgorm.NewConfig(
+					pgorm.WithDSN("postgres://user:pass@127.0.0.1:5432/dbname?sslmode=disable"),
+					pgorm.WithStartupPing(false),
+				)),
+				TableName:  "knowledge_chunks",
+				Dimensions: 1536,
+			},
+			wantErr: nil,
+		},
+		{
+			name: "rejects multiple connection sources",
+			cfg: PGVectorStoreConfig{
+				ConnString: "postgres://user:pass@127.0.0.1:5432/dbname?sslmode=disable",
+				PGORMConfig: ptr(pgorm.NewConfig(
+					pgorm.WithDSN("postgres://user:pass@127.0.0.1:5432/dbname?sslmode=disable"),
+					pgorm.WithStartupPing(false),
+				)),
+				TableName:  "knowledge_chunks",
+				Dimensions: 1536,
 			},
 			wantErr: ErrInvalidConfig,
 		},
@@ -295,11 +322,25 @@ func TestPGVectorStoreIntegration(t *testing.T) {
 	}
 
 	tests := []struct {
-		name string
-		run  func(t *testing.T, store VectorStore)
+		name       string
+		newStore   func(t *testing.T) VectorStore
+		afterClose func(t *testing.T)
+		run        func(t *testing.T, store VectorStore)
 	}{
 		{
 			name: "upsert search and delete by source paths",
+			newStore: func(t *testing.T) VectorStore {
+				t.Helper()
+				store, err := NewPGVectorStore(PGVectorStoreConfig{
+					ConnString: dsn,
+					TableName:  pgVectorTestTableName(t.Name()),
+					Dimensions: 3,
+				})
+				if err != nil {
+					t.Fatalf("NewPGVectorStore() error = %v", err)
+				}
+				return store
+			},
 			run: func(t *testing.T, store VectorStore) {
 				t.Helper()
 
@@ -349,6 +390,96 @@ func TestPGVectorStoreIntegration(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "pgorm config connection source",
+			newStore: func(t *testing.T) VectorStore {
+				t.Helper()
+				pgormCfg := pgorm.NewConfig(
+					pgorm.WithDSN(dsn),
+					pgorm.WithStartupPing(false),
+				)
+				store, err := NewPGVectorStore(PGVectorStoreConfig{
+					PGORMConfig: &pgormCfg,
+					TableName:   pgVectorTestTableName(t.Name()),
+					Dimensions:  3,
+				})
+				if err != nil {
+					t.Fatalf("NewPGVectorStore() error = %v", err)
+				}
+				return store
+			},
+			run: func(t *testing.T, store VectorStore) {
+				t.Helper()
+				if err := store.Upsert(context.Background(), []ChunkRecord{
+					{
+						ChunkID:    "doc-a:0",
+						ParentID:   "doc-a",
+						SourcePath: "/kb/a.md",
+						Title:      "A",
+						Text:       "gateway api",
+						StartRune:  0,
+						EndRune:    11,
+						Metadata:   map[string]string{"tag": "api"},
+						Embedding:  []float32{1, 0, 0},
+					},
+				}); err != nil {
+					t.Fatalf("Upsert() error = %v", err)
+				}
+				hits, err := store.Search(context.Background(), []float32{1, 0, 0}, 1, 0)
+				if err != nil {
+					t.Fatalf("Search() error = %v", err)
+				}
+				if len(hits) != 1 {
+					t.Fatalf("Search() len = %d, want 1", len(hits))
+				}
+			},
+		},
+		{
+			name: "pgorm client connection source keeps external client open",
+			newStore: func(t *testing.T) VectorStore {
+				t.Helper()
+				client, err := pgorm.Open(context.Background(),
+					pgorm.WithDSN(dsn),
+					pgorm.WithStartupPing(false),
+				)
+				if err != nil {
+					t.Fatalf("pgorm.Open() error = %v", err)
+				}
+				t.Cleanup(client.Close)
+				store, err := NewPGVectorStore(PGVectorStoreConfig{
+					PGORMClient: client,
+					TableName:   pgVectorTestTableName(t.Name()),
+					Dimensions:  3,
+				})
+				if err != nil {
+					t.Fatalf("NewPGVectorStore() error = %v", err)
+				}
+				t.Cleanup(func() {
+					if pingErr := client.PingContext(context.Background()); pingErr != nil {
+						t.Fatalf("pgorm client ping after store close = %v", pingErr)
+					}
+				})
+				return store
+			},
+			run: func(t *testing.T, store VectorStore) {
+				t.Helper()
+				if err := store.Upsert(context.Background(), []ChunkRecord{
+					{
+						ChunkID:    "doc-a:0",
+						ParentID:   "doc-a",
+						SourcePath: "/kb/a.md",
+						Title:      "A",
+						Text:       "gateway api",
+						StartRune:  0,
+						EndRune:    11,
+						Metadata:   map[string]string{"tag": "api"},
+						Embedding:  []float32{1, 0, 0},
+					},
+				}); err != nil {
+					t.Fatalf("Upsert() error = %v", err)
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -356,14 +487,7 @@ func TestPGVectorStoreIntegration(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			store, err := NewPGVectorStore(PGVectorStoreConfig{
-				ConnString: dsn,
-				TableName:  pgVectorTestTableName(t.Name()),
-				Dimensions: 3,
-			})
-			if err != nil {
-				t.Fatalf("NewPGVectorStore() error = %v", err)
-			}
+			store := tc.newStore(t)
 			t.Cleanup(func() {
 				if cerr := store.Close(); cerr != nil {
 					t.Fatalf("Close() error = %v", cerr)
@@ -463,4 +587,8 @@ func (stubPGVectorEmbedder) EmbedTexts(_ context.Context, texts []string) ([][]f
 func pgVectorTestTableName(name string) string {
 	replacer := strings.NewReplacer("/", "_", "-", "_", " ", "_")
 	return "pgvector_" + strings.ToLower(replacer.Replace(name))
+}
+
+func ptr[T any](v T) *T {
+	return &v
 }

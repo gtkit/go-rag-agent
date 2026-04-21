@@ -75,6 +75,26 @@ func (l *fakeToolCallLimiter) Acquire(string) error {
 	return nil
 }
 
+type fakePromptCache struct {
+	items map[string][]llm.Message
+	gets  int
+	sets  int
+}
+
+func (c *fakePromptCache) Get(_ context.Context, key string) ([]llm.Message, bool) {
+	c.gets++
+	msgs, ok := c.items[key]
+	return append([]llm.Message(nil), msgs...), ok
+}
+
+func (c *fakePromptCache) Set(_ context.Context, key string, messages []llm.Message) {
+	c.sets++
+	if c.items == nil {
+		c.items = make(map[string][]llm.Message)
+	}
+	c.items[key] = append([]llm.Message(nil), messages...)
+}
+
 func TestBuildPromptMessages(t *testing.T) {
 	t.Parallel()
 
@@ -264,6 +284,38 @@ func TestChatRunnerAskUsesPlainModelWhenEvidenceProvided(t *testing.T) {
 				t.Fatalf("web tool runs = %d, want %d", webTool.calls, tt.wantToolRuns)
 			}
 		})
+	}
+}
+
+func TestChatRunnerAskUsesPromptCache(t *testing.T) {
+	t.Parallel()
+
+	model := &fakeChatModel{answer: "cached answer"}
+	cache := &fakePromptCache{}
+	var hits []bool
+	runner := &ChatRunner{model: model}
+	req := Request{
+		Query:               "final question",
+		History:             []memory.Turn{{User: "u1", Assistant: "a1"}},
+		EvidenceText:        "context block",
+		PromptCache:         cache,
+		PromptCacheObserver: func(hit bool) { hits = append(hits, hit) },
+	}
+
+	if _, err := runner.Ask(context.Background(), req); err != nil {
+		t.Fatalf("Ask() first error = %v", err)
+	}
+	if _, err := runner.Ask(context.Background(), req); err != nil {
+		t.Fatalf("Ask() second error = %v", err)
+	}
+	if cache.gets != 2 {
+		t.Fatalf("cache gets = %d, want 2", cache.gets)
+	}
+	if cache.sets != 1 {
+		t.Fatalf("cache sets = %d, want 1", cache.sets)
+	}
+	if len(hits) != 2 || hits[0] || !hits[1] {
+		t.Fatalf("cache hit sequence = %v, want [false true]", hits)
 	}
 }
 

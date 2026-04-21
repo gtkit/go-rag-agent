@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gtkit/pgorm"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,6 +32,8 @@ const (
 // PGVectorStoreConfig 定义 PostgreSQL/pgvector store 的构造配置。
 type PGVectorStoreConfig struct {
 	Pool                *pgxpool.Pool
+	PGORMClient         *pgorm.Client
+	PGORMConfig         *pgorm.Config
 	ConnString          string
 	SchemaName          string
 	TableName           string
@@ -97,8 +100,10 @@ func (c PGVectorStoreConfig) normalized() PGVectorStoreConfig {
 func (c PGVectorStoreConfig) validate() error {
 	c = c.normalized()
 
-	if c.Pool == nil && c.ConnString == "" {
-		return fmt.Errorf("pgvector pool or conn string is required: %w", ErrInvalidConfig)
+	if count := c.connectionSourceCount(); count == 0 {
+		return fmt.Errorf("pgvector connection source is required: %w", ErrInvalidConfig)
+	} else if count > 1 {
+		return fmt.Errorf("pgvector connection sources must be mutually exclusive: %w", ErrInvalidConfig)
 	}
 	if c.TableName == "" {
 		return fmt.Errorf("pgvector table name is required: %w", ErrInvalidConfig)
@@ -119,9 +124,27 @@ func (c PGVectorStoreConfig) validate() error {
 	return nil
 }
 
+func (c PGVectorStoreConfig) connectionSourceCount() int {
+	count := 0
+	if c.Pool != nil {
+		count++
+	}
+	if c.PGORMClient != nil {
+		count++
+	}
+	if c.PGORMConfig != nil {
+		count++
+	}
+	if c.ConnString != "" {
+		count++
+	}
+	return count
+}
+
 type pgVectorStore struct {
 	pool      *pgxpool.Pool
 	ownsPool  bool
+	pgorm     *pgorm.Client
 	cfg       PGVectorStoreConfig
 	tableName string
 }
@@ -135,7 +158,25 @@ func NewPGVectorStore(cfg PGVectorStoreConfig) (VectorStore, error) {
 
 	pool := cfg.Pool
 	ownsPool := false
-	if pool == nil {
+	var pgormClient *pgorm.Client
+	switch {
+	case cfg.PGORMClient != nil:
+		pgormClient = cfg.PGORMClient
+		pool = pgormClient.Pool()
+		if pool == nil {
+			return nil, fmt.Errorf("pgorm client pool is nil: %w", ErrInvalidConfig)
+		}
+	case cfg.PGORMConfig != nil:
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		client, err := cfg.PGORMConfig.Clone().Open(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("open pgorm client: %w", err)
+		}
+		pgormClient = client
+		pool = client.Pool()
+		ownsPool = false
+	case pool == nil:
 		parsed, err := pgxpool.ParseConfig(cfg.ConnString)
 		if err != nil {
 			return nil, fmt.Errorf("parse pgvector conn string: %w", err)
@@ -152,6 +193,7 @@ func NewPGVectorStore(cfg PGVectorStoreConfig) (VectorStore, error) {
 	store := &pgVectorStore{
 		pool:      pool,
 		ownsPool:  ownsPool,
+		pgorm:     pgormClient,
 		cfg:       cfg,
 		tableName: pgx.Identifier{cfg.SchemaName, cfg.TableName}.Sanitize(),
 	}
@@ -401,6 +443,10 @@ func (s *pgVectorStore) DeleteBySourcePaths(ctx context.Context, sourcePaths []s
 }
 
 func (s *pgVectorStore) Close() error {
+	if s.pgorm != nil && s.cfg.PGORMConfig != nil {
+		s.pgorm.Close()
+		return nil
+	}
 	if s.ownsPool && s.pool != nil {
 		s.pool.Close()
 	}

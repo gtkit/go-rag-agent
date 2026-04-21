@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 
+	"github.com/gtkit/go-rag-agent/internal/llm"
 	"github.com/gtkit/go-rag-agent/internal/memory"
 )
 
@@ -15,6 +16,12 @@ type ToolObserver interface {
 // ToolCallLimiter limits tool call attempts during one request.
 type ToolCallLimiter interface {
 	Acquire(tool string) error
+}
+
+// PromptCache caches built prompt messages for deterministic requests.
+type PromptCache interface {
+	Get(ctx context.Context, key string) ([]llm.Message, bool)
+	Set(ctx context.Context, key string, messages []llm.Message)
 }
 
 // Request 表示内部 graph 层的请求输入。
@@ -31,6 +38,8 @@ type Request struct {
 	MaxMemoryTokens           int
 	MaxSummaryTokens          int
 	EnablePromptHardening     bool
+	PromptCache               PromptCache
+	PromptCacheObserver       func(bool)
 	ToolObserver              ToolObserver
 	ToolCallLimiter           ToolCallLimiter
 }
