@@ -9,6 +9,41 @@
 
 ## [Unreleased]
 
+## [v0.3.0] - 2026-04-21
+
+### Added
+- 运行时扩展边界：
+  - `RuntimeComponents`
+  - `StorageComponents`
+  - 可注入 `VectorStore` / `DocumentLoader` / `Reranker`
+- 单次执行结构化 trace：
+  - `ExecutionTrace`
+  - `TraceRecorder`
+  - `Answer.Trace`
+  - `StreamEvent.Trace`
+- PostgreSQL / pgvector 第二实现：
+  - `NewPGVectorStore(...)`
+  - `PGVectorStoreConfig`
+  - embedded mode 与 server mode 双模式说明
+- 工具注册表与调用上限：
+  - `Tool`
+  - `ToolRegistry`
+  - `MaxToolCalls` 真实生效
+- 同步结构化输出能力：
+  - `AskStructured`
+  - `AskStructuredWithOptions`
+  - `StructuredAnswer`
+
+### Changed
+- 默认存储、文档加载与规则重排从内部实现提升为默认 adapter
+- 默认工具接线改为通过统一注册表构建
+- 自定义同名 `search_web` 工具现在可覆写默认 web 工具
+- README 补充 runtime 注入、存储边界、pgvector、工具注册表和结构化输出说明
+
+### Fixed
+- 修复工具调用上限引入后对手工构造 `Agent` 场景的兼容性回归
+- 修复 pgvector 初始化过程中的扩展注册竞态与真实连库集成问题
+
 ## [v0.2.0] - 2026-04-17
 
 ### Added

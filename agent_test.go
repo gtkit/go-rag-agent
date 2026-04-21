@@ -784,6 +784,176 @@ func TestAgentUsesInjectedStorageComponents(t *testing.T) {
 	}
 }
 
+func TestAskFailsWhenMaxToolCallsExceeded(t *testing.T) {
+	t.Parallel()
+
+	registry := NewToolRegistry()
+	if err := registry.Register(registryTestTool{
+		name:        "search_web",
+		description: "web",
+		result:      "web result",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	a, err := New(Config{
+		Runtime: RuntimeComponents{
+			ChatModel: stubRuntimeChatModel{},
+			Embedder:  stubRuntimeEmbedder{},
+		},
+		Storage: StorageComponents{
+			VectorStore: &injectedVectorStoreStub{},
+		},
+		TopK:               1,
+		ChunkSize:          32,
+		ChunkOverlap:       0,
+		MaxHistoryRounds:   8,
+		MaxToolCalls:       1,
+		RequestTimeout:     time.Second,
+		EnableHybridSearch: false,
+		EnableRerank:       false,
+		EnableWebSearch:    true,
+		WebSearch: WebSearchConfig{
+			APIKey:      "dummy",
+			MaxResults:  5,
+			SearchDepth: "basic",
+			Topic:       "general",
+		},
+		ToolRegistry: registry,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := a.Close(); cerr != nil {
+			t.Fatalf("Close() error = %v", cerr)
+		}
+	})
+
+	_, err = a.GetSession("tool-limit").Ask(context.Background(), "latest news")
+	if err == nil {
+		t.Fatal("Ask() error = nil, want non-nil")
+	}
+	if !errors.Is(err, ErrToolCallLimitExceeded) {
+		t.Fatalf("Ask() error = %v, want errors.Is(..., %v)", err, ErrToolCallLimitExceeded)
+	}
+}
+
+func TestAskUsesCustomFallbackToolWithoutEnableWebSearch(t *testing.T) {
+	t.Parallel()
+
+	registry := NewToolRegistry()
+	customTool := registryTestTool{
+		name:        "search_internal",
+		description: "internal fallback",
+		result:      "internal fallback result",
+	}
+	if err := registry.Register(customTool); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	a, err := New(Config{
+		Runtime: RuntimeComponents{
+			ChatModel: stubRuntimeChatModel{},
+			Embedder:  stubRuntimeEmbedder{},
+		},
+		Storage: StorageComponents{
+			VectorStore: &injectedVectorStoreStub{},
+		},
+		TopK:             1,
+		ChunkSize:        32,
+		ChunkOverlap:     0,
+		MaxHistoryRounds: 8,
+		MaxToolCalls:     2,
+		RequestTimeout:   time.Second,
+		ToolRegistry:     registry,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := a.Close(); cerr != nil {
+			t.Fatalf("Close() error = %v", cerr)
+		}
+	})
+
+	answer, err := a.GetSession("custom-fallback").Ask(context.Background(), "latest news")
+	if err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+	if answer.Text == "" {
+		t.Fatal("Ask() text = empty")
+	}
+	toolNames := make([]string, 0, len(answer.Trace.ToolCalls))
+	for _, toolCall := range answer.Trace.ToolCalls {
+		toolNames = append(toolNames, toolCall.Name)
+	}
+	if !slices.Contains(toolNames, "search_internal") {
+		t.Fatalf("trace tool names = %v, want contains %q", toolNames, "search_internal")
+	}
+}
+
+func TestAskUsesConfiguredSearchWebOverride(t *testing.T) {
+	t.Parallel()
+
+	registry := NewToolRegistry()
+	if err := registry.Register(registryTestTool{
+		name:        "search_web",
+		description: "override web",
+		result:      "override web result",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	a, err := New(Config{
+		Runtime: RuntimeComponents{
+			ChatModel: stubRuntimeChatModel{},
+			Embedder:  stubRuntimeEmbedder{},
+		},
+		Storage: StorageComponents{
+			VectorStore: &injectedVectorStoreStub{},
+		},
+		TopK:             1,
+		ChunkSize:        32,
+		ChunkOverlap:     0,
+		MaxHistoryRounds: 8,
+		MaxToolCalls:     2,
+		RequestTimeout:   time.Second,
+		EnableWebSearch:  true,
+		WebSearch: WebSearchConfig{
+			APIKey:      "dummy",
+			BaseURL:     "http://127.0.0.1:1",
+			MaxResults:  5,
+			SearchDepth: "basic",
+			Topic:       "general",
+		},
+		ToolRegistry: registry,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := a.Close(); cerr != nil {
+			t.Fatalf("Close() error = %v", cerr)
+		}
+	})
+
+	answer, err := a.GetSession("override-search-web").Ask(context.Background(), "latest news")
+	if err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+	if answer.Text == "" {
+		t.Fatal("Ask() text = empty")
+	}
+	toolNames := make([]string, 0, len(answer.Trace.ToolCalls))
+	for _, toolCall := range answer.Trace.ToolCalls {
+		toolNames = append(toolNames, toolCall.Name)
+	}
+	if !slices.Contains(toolNames, "search_web") {
+		t.Fatalf("trace tool names = %v, want contains %q", toolNames, "search_web")
+	}
+}
+
 type cleanupSource struct {
 	closed bool
 }

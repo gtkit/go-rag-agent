@@ -15,4 +15,10 @@ var (
 	ErrContextAssembly = errors.New("ragagent: context assembly failed")
 	// ErrEvidenceInsufficient indicates retrieved evidence is insufficient to answer.
 	ErrEvidenceInsufficient = errors.New("ragagent: evidence insufficient")
+	// ErrToolCallLimitExceeded indicates tool execution exceeded configured max calls.
+	ErrToolCallLimitExceeded = errors.New("ragagent: tool call limit exceeded")
+	// ErrStructuredOutputTarget indicates structured output target is invalid.
+	ErrStructuredOutputTarget = errors.New("ragagent: structured output target is invalid")
+	// ErrStructuredOutputInvalid indicates model output could not be parsed into structured JSON.
+	ErrStructuredOutputInvalid = errors.New("ragagent: structured output is invalid")
 )

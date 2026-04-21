@@ -12,8 +12,8 @@ import (
 
 // ChatRunner 使用项目内工具编排和 LangChainGo 聊天模型执行问答。
 type ChatRunner struct {
-	model   llm.ChatModel
-	webTool tools.Tool
+	model         llm.ChatModel
+	fallbackTools []tools.Tool
 }
 
 // NewChatRunner 创建问答 runner。
@@ -22,20 +22,20 @@ func NewChatRunner(model llm.ChatModel, toolset ...tools.Tool) (*ChatRunner, err
 		return nil, fmt.Errorf("chat model is required")
 	}
 
-	var webTool tools.Tool
+	fallbackTools := make([]tools.Tool, 0, len(toolset))
 	for _, tool := range toolset {
 		if tool == nil {
 			continue
 		}
-		if tool.Name() == "search_web" {
-			webTool = tool
-			break
+		if tool.Name() == "retrieve_context" {
+			continue
 		}
+		fallbackTools = append(fallbackTools, tool)
 	}
 
 	return &ChatRunner{
-		model:   model,
-		webTool: webTool,
+		model:         model,
+		fallbackTools: fallbackTools,
 	}, nil
 }
 
@@ -82,38 +82,60 @@ func (r *ChatRunner) AskStream(ctx context.Context, req Request, emit StreamEmit
 }
 
 func (r *ChatRunner) messagesForRequest(ctx context.Context, req Request) ([]llm.Message, error) {
-	msgs := buildPromptMessages(req.History, req.EvidenceText, req.Query)
+	msgs := buildPromptMessages(req.History, req.EvidenceText, req.Query, req.ResponseFormatInstruction)
 	if strings.TrimSpace(req.EvidenceText) != "" {
 		return msgs, nil
 	}
-	if r.webTool == nil {
+	if len(r.fallbackTools) == 0 {
 		return nil, fmt.Errorf("web search tool is required when evidence text is empty")
 	}
 
-	if req.ToolObserver != nil {
-		if err := req.ToolObserver.OnToolStart(ctx, r.webTool.Name()); err != nil {
-			return nil, fmt.Errorf("observe web search tool start: %w", err)
+	var lastErr error
+	for _, tool := range r.fallbackTools {
+		if req.ToolCallLimiter != nil {
+			if err := req.ToolCallLimiter.Acquire(tool.Name()); err != nil {
+				return nil, err
+			}
 		}
-	}
-	webResult, err := r.webTool.Run(ctx, req.Query)
-	if req.ToolObserver != nil {
-		if endErr := req.ToolObserver.OnToolEnd(ctx, r.webTool.Name(), err); endErr != nil {
-			return nil, fmt.Errorf("observe web search tool end: %w", endErr)
+		if req.ToolObserver != nil {
+			if err := req.ToolObserver.OnToolStart(ctx, tool.Name()); err != nil {
+				return nil, fmt.Errorf("observe tool start: %w", err)
+			}
 		}
+		toolResult, err := tool.Run(ctx, req.Query)
+		if req.ToolObserver != nil {
+			if endErr := req.ToolObserver.OnToolEnd(ctx, tool.Name(), err); endErr != nil {
+				return nil, fmt.Errorf("observe tool end: %w", endErr)
+			}
+		}
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if strings.TrimSpace(toolResult) == "" {
+			continue
+		}
+		msgs = buildPromptMessages(req.History, toolResult, req.Query, req.ResponseFormatInstruction)
+		return msgs, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("run web search tool: %w", err)
+	if lastErr != nil {
+		return nil, fmt.Errorf("run fallback tools: %w", lastErr)
 	}
-	msgs = buildPromptMessages(req.History, webResult, req.Query)
-	return msgs, nil
+	return nil, fmt.Errorf("no fallback tool produced evidence")
 }
 
-func buildPromptMessages(history []memory.Turn, evidenceText, query string) []llm.Message {
-	msgs := make([]llm.Message, 0, len(history)*2+3)
+func buildPromptMessages(history []memory.Turn, evidenceText, query string, responseFormatInstruction string) []llm.Message {
+	msgs := make([]llm.Message, 0, len(history)*2+4)
 	msgs = append(msgs, llm.Message{
 		Role:    llm.RoleSystem,
 		Content: "Answer with retrieved evidence first. If evidence is insufficient, use available tools. Prefer local retrieval before web search. If evidence is still insufficient, say so explicitly.",
 	})
+	if strings.TrimSpace(responseFormatInstruction) != "" {
+		msgs = append(msgs, llm.Message{
+			Role:    llm.RoleSystem,
+			Content: responseFormatInstruction,
+		})
+	}
 
 	for _, turn := range history {
 		if strings.TrimSpace(turn.User) != "" {

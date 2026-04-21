@@ -65,6 +65,44 @@ func (s *Session) AskWithOptions(ctx context.Context, query string, opts QueryOp
 	return answer, nil
 }
 
+// AskStructured 执行同步结构化问答，并将 JSON 结果反序列化到 target。
+func (s *Session) AskStructured(ctx context.Context, query string, target any) (StructuredAnswer, error) {
+	return s.AskStructuredWithOptions(ctx, query, QueryOptions{}, target)
+}
+
+// AskStructuredWithOptions 执行带查询选项的同步结构化问答，并将 JSON 结果反序列化到 target。
+func (s *Session) AskStructuredWithOptions(ctx context.Context, query string, opts QueryOptions, target any) (StructuredAnswer, error) {
+	if err := validateStructuredTarget(target); err != nil {
+		return StructuredAnswer{}, err
+	}
+	if s.isEmittingCallback() {
+		return StructuredAnswer{}, errSessionCallbackReentry
+	}
+	if err := s.agent.beginOperation(); err != nil {
+		return StructuredAnswer{}, err
+	}
+	defer s.agent.endOperation()
+
+	if s.beforeAskLock != nil {
+		s.beforeAskLock()
+	}
+
+	if err := s.acquireExecutionSlot(ctx); err != nil {
+		return StructuredAnswer{}, err
+	}
+	defer s.releaseExecutionSlot()
+	if err := s.beginExecution(); err != nil {
+		return StructuredAnswer{}, err
+	}
+
+	answer, err := s.agent.askStructuredLocked(ctx, s, query, opts, target)
+	s.endExecution(query, answer.Answer.Text, err == nil)
+	if err != nil {
+		return answer, err
+	}
+	return answer, nil
+}
+
 // AskStream 执行当前 Session 的流式问答流程。
 func (s *Session) AskStream(ctx context.Context, query string, emit func(StreamEvent) error) error {
 	return s.AskStreamWithOptions(ctx, query, QueryOptions{}, emit)

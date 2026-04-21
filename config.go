@@ -42,6 +42,7 @@ type Config struct {
 	RerankShortlistMultiplier int
 	Runtime                   RuntimeComponents
 	Storage                   StorageComponents
+	ToolRegistry              *ToolRegistry
 	PDFOCRBridge              PDFOCRBridgeConfig
 	WebSearch                 WebSearchConfig
 	Logger                    Logger

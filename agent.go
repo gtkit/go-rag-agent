@@ -28,18 +28,19 @@ const (
 
 // Agent 是根运行时对象，负责知识导入、检索、会话与执行编排。
 type Agent struct {
-	cfg         Config
-	store       storage.VectorStore
-	loader      DocumentLoader
-	embedder    llm.Embedder
-	reranker    Reranker
-	runner      graph.Runner
-	chunker     *rag.Chunker
-	dispatcher  telemetry.Dispatcher
-	callbacks   []Callback
-	dirSync     *directorySyncState
-	dirSyncErr  error
-	dirSyncOnce sync.Once
+	cfg          Config
+	store        storage.VectorStore
+	loader       DocumentLoader
+	embedder     llm.Embedder
+	reranker     Reranker
+	toolRegistry *ToolRegistry
+	runner       graph.Runner
+	chunker      *rag.Chunker
+	dispatcher   telemetry.Dispatcher
+	callbacks    []Callback
+	dirSync      *directorySyncState
+	dirSyncErr   error
+	dirSyncOnce  sync.Once
 
 	sessionsMu sync.RWMutex
 	sessions   map[string]*Session
@@ -283,9 +284,21 @@ func New(cfg Config) (*Agent, error) {
 	retrievalTool := tools.NewRetrievalTool(
 		newRootRetriever(store, embedder, reranker, cfg.TopK, float32(cfg.SimilarityThreshold), storage.SearchFilter{}, cfg.EnableHybridSearch, cfg.EnableRerank, retrievalOptions),
 	)
-	toolset := []tools.Tool{retrievalTool}
+	toolRegistry := cfg.ToolRegistry.clone()
+	if toolRegistry == nil {
+		toolRegistry = NewToolRegistry()
+	}
+	if _, ok := toolRegistry.Lookup(retrieveToolName); !ok {
+		_ = toolRegistry.registerOrReplace(retrievalTool)
+	}
 	if webSearcher := newWebSearcher(cfg); webSearcher != nil {
-		toolset = append(toolset, tools.NewWebSearchTool(webSearcher))
+		if _, ok := toolRegistry.Lookup("search_web"); !ok {
+			_ = toolRegistry.registerOrReplace(tools.NewWebSearchTool(webSearcher))
+		}
+	}
+	toolset := make([]tools.Tool, 0, len(toolRegistry.Tools()))
+	for _, tool := range toolRegistry.Tools() {
+		toolset = append(toolset, tool)
 	}
 	runner, err := graph.NewChatRunner(chatModel, toolset...)
 	if err != nil {
@@ -300,18 +313,42 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	return &Agent{
-		cfg:        cfg,
-		store:      store,
-		loader:     loader,
-		embedder:   embedder,
-		reranker:   reranker,
-		runner:     runner,
-		chunker:    chunker,
-		dispatcher: dispatcher,
-		callbacks:  rootCallbacks,
-		dirSync:    dirSync,
-		sessions:   make(map[string]*Session),
+		cfg:          cfg,
+		store:        store,
+		loader:       loader,
+		embedder:     embedder,
+		reranker:     reranker,
+		toolRegistry: toolRegistry,
+		runner:       runner,
+		chunker:      chunker,
+		dispatcher:   dispatcher,
+		callbacks:    rootCallbacks,
+		dirSync:      dirSync,
+		sessions:     make(map[string]*Session),
 	}, nil
+}
+
+type toolCallBudget struct {
+	limit int
+	used  int
+}
+
+func newToolCallBudget(limit int) *toolCallBudget {
+	if limit <= 0 {
+		limit = 4
+	}
+	return &toolCallBudget{limit: limit}
+}
+
+func (b *toolCallBudget) Acquire(tool string) error {
+	if b == nil {
+		return nil
+	}
+	if b.used >= b.limit {
+		return fmt.Errorf("%w: tool=%s limit=%d", ErrToolCallLimitExceeded, tool, b.limit)
+	}
+	b.used++
+	return nil
 }
 
 func newAgentVectorStore(cfg Config) (storage.VectorStore, error) {
@@ -575,11 +612,16 @@ func (o graphToolObserver) OnToolEnd(ctx context.Context, tool string, err error
 	return o.onEnd(ctx, tool, err)
 }
 
-func (a *Agent) newGraphToolObserver(s *Session, trace *executionTraceBuilder) graph.ToolObserver {
+func (a *Agent) newGraphToolObserver(s *Session, trace *executionTraceBuilder, emit func(StreamEvent) error) graph.ToolObserver {
 	return graphToolObserver{
 		onStart: func(ctx context.Context, tool string) error {
 			if trace != nil {
 				trace.startTool(tool)
+			}
+			if emit != nil && tool != retrieveToolName {
+				if err := emit(StreamEvent{Type: EventToolStart, ToolName: tool}); err != nil {
+					return err
+				}
 			}
 			return a.runTelemetryCallback(s, func() { a.dispatcher.OnToolStart(ctx, tool) })
 		},
@@ -587,12 +629,20 @@ func (a *Agent) newGraphToolObserver(s *Session, trace *executionTraceBuilder) g
 			if trace != nil {
 				trace.endTool(tool, err)
 			}
+			if emit != nil && tool != retrieveToolName {
+				if streamErr := emit(StreamEvent{Type: EventToolEnd, ToolName: tool, Err: err}); streamErr != nil {
+					return streamErr
+				}
+			}
 			return a.runTelemetryCallback(s, func() { a.dispatcher.OnToolEnd(ctx, tool, err) })
 		},
 	}
 }
 
-func (a *Agent) retrieve(ctx context.Context, s *Session, query string, filter storage.SearchFilter, trace *executionTraceBuilder) ([]storage.SearchHit, string, error) {
+func (a *Agent) retrieve(ctx context.Context, s *Session, query string, filter storage.SearchFilter, trace *executionTraceBuilder, budget *toolCallBudget) ([]storage.SearchHit, string, error) {
+	if err := budget.Acquire(retrieveToolName); err != nil {
+		return nil, "", err
+	}
 	if err := a.runTelemetryCallback(s, func() { a.dispatcher.OnRetrieveStart(ctx, query) }); err != nil {
 		return nil, "", err
 	}
@@ -704,12 +754,42 @@ func citationsFromHits(hits []storage.SearchHit) []Citation {
 }
 
 func (a *Agent) askLocked(ctx context.Context, s *Session, query string, opts QueryOptions) (answer Answer, err error) {
+	return a.askWithFormatLocked(ctx, s, query, opts, "")
+}
+
+func (a *Agent) askStructuredLocked(ctx context.Context, s *Session, query string, opts QueryOptions, target any) (StructuredAnswer, error) {
+	responseFormatInstruction, err := buildStructuredInstruction(target)
+	if err != nil {
+		return StructuredAnswer{}, err
+	}
+	answer, err := a.askWithFormatLocked(ctx, s, query, opts, responseFormatInstruction)
+	if err != nil {
+		return StructuredAnswer{Answer: answer}, err
+	}
+	rawJSON, err := extractStructuredJSON(answer.Text)
+	if err != nil {
+		return StructuredAnswer{Answer: answer}, err
+	}
+	if err := unmarshalStructuredJSON(rawJSON, target); err != nil {
+		return StructuredAnswer{
+			Answer:  answer,
+			RawJSON: rawJSON,
+		}, err
+	}
+	return StructuredAnswer{
+		Answer:  answer,
+		RawJSON: rawJSON,
+	}, nil
+}
+
+func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query string, opts QueryOptions, responseFormatInstruction string) (answer Answer, err error) {
 	if err = ctx.Err(); err != nil {
 		return Answer{}, err
 	}
 
 	rewrittenQuery := rag.RewriteFollowUp(query, s.history.LastUserQueries())
 	trace := newExecutionTraceBuilder(s.id, query, rewrittenQuery, opts.Filter, false)
+	budget := newToolCallBudget(a.cfg.MaxToolCalls)
 	defer func() {
 		if trace == nil {
 			return
@@ -728,9 +808,9 @@ func (a *Agent) askLocked(ctx context.Context, s *Session, query string, opts Qu
 		}
 	}()
 
-	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery, opts.storageFilter(), trace)
+	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery, opts.storageFilter(), trace, budget)
 	if err != nil {
-		if a.cfg.EnableWebSearch && errors.Is(err, ErrEvidenceInsufficient) {
+		if a.hasFallbackTools() && errors.Is(err, ErrEvidenceInsufficient) {
 			hits = nil
 			evidenceText = ""
 		} else {
@@ -744,10 +824,12 @@ func (a *Agent) askLocked(ctx context.Context, s *Session, query string, opts Qu
 		return Answer{}, err
 	}
 	answerText, err := a.runner.Ask(ctx, graph.Request{
-		Query:        rewrittenQuery,
-		History:      s.history.Turns(),
-		EvidenceText: evidenceText,
-		ToolObserver: a.newGraphToolObserver(s, trace),
+		Query:                     rewrittenQuery,
+		History:                   s.history.Turns(),
+		EvidenceText:              evidenceText,
+		ResponseFormatInstruction: responseFormatInstruction,
+		ToolObserver:              a.newGraphToolObserver(s, trace, nil),
+		ToolCallLimiter:           budget,
 	})
 	if endErr := a.runTelemetryCallback(s, func() { a.dispatcher.OnModelEnd(ctx, modelName, err) }); endErr != nil && err == nil {
 		err = endErr
@@ -787,6 +869,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 	}
 
 	trace := newExecutionTraceBuilder(s.id, query, rag.RewriteFollowUp(query, s.history.LastUserQueries()), opts.Filter, true)
+	budget := newToolCallBudget(a.cfg.MaxToolCalls)
 	emitEvent := func(event StreamEvent) error {
 		event.Timestamp = time.Now()
 		var emitErr error
@@ -820,9 +903,9 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 		return "", err
 	}
 
-	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery, filter, trace)
+	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery, filter, trace, budget)
 	if err != nil {
-		if a.cfg.EnableWebSearch && errors.Is(err, ErrEvidenceInsufficient) {
+		if a.hasFallbackTools() && errors.Is(err, ErrEvidenceInsufficient) {
 			hits = nil
 			evidenceText = ""
 		} else {
@@ -860,10 +943,11 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 		return "", err
 	}
 	err = a.runner.AskStream(ctx, graph.Request{
-		Query:        rewrittenQuery,
-		History:      s.history.Turns(),
-		EvidenceText: evidenceText,
-		ToolObserver: a.newGraphToolObserver(s, trace),
+		Query:           rewrittenQuery,
+		History:         s.history.Turns(),
+		EvidenceText:    evidenceText,
+		ToolObserver:    a.newGraphToolObserver(s, trace, emitEvent),
+		ToolCallLimiter: budget,
 	}, func(event graph.Event) error {
 		switch event.Type {
 		case graph.EventAnswerChunk:
@@ -1005,4 +1089,23 @@ func (c Config) chatModelName() string {
 		return "custom-chat-model"
 	}
 	return "chat-model"
+}
+
+func (a *Agent) hasFallbackTools() bool {
+	if a.cfg.EnableWebSearch {
+		return true
+	}
+	if a.toolRegistry == nil {
+		return false
+	}
+	for _, tool := range a.toolRegistry.Tools() {
+		if tool == nil {
+			continue
+		}
+		if tool.Name() == retrieveToolName {
+			continue
+		}
+		return true
+	}
+	return false
 }

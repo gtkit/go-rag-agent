@@ -711,6 +711,66 @@ func TestAskStreamFallsBackToWebSearchPathWhenLocalEvidenceInsufficient(t *testi
 	}
 }
 
+func TestAskStreamEmitsCustomFallbackToolLifecycle(t *testing.T) {
+	t.Parallel()
+
+	registry := NewToolRegistry()
+	if err := registry.Register(registryTestTool{
+		name:        "search_internal",
+		description: "internal fallback",
+		result:      "internal fallback result",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	a, err := New(Config{
+		Runtime: RuntimeComponents{
+			ChatModel: stubRuntimeChatModel{},
+			Embedder:  stubRuntimeEmbedder{},
+		},
+		Storage: StorageComponents{
+			VectorStore: &injectedVectorStoreStub{},
+		},
+		TopK:             1,
+		ChunkSize:        32,
+		ChunkOverlap:     0,
+		MaxHistoryRounds: 8,
+		MaxToolCalls:     2,
+		RequestTimeout:   time.Second,
+		ToolRegistry:     registry,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := a.Close(); cerr != nil {
+			t.Fatalf("Close() error = %v", cerr)
+		}
+	})
+
+	var gotToolEvents []StreamEvent
+	err = a.GetSession("custom-fallback-stream").AskStream(context.Background(), "latest news", func(event StreamEvent) error {
+		if event.Type == EventToolStart || event.Type == EventToolEnd {
+			gotToolEvents = append(gotToolEvents, event)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("AskStream() error = %v", err)
+	}
+
+	gotNames := make([]string, 0, len(gotToolEvents))
+	for _, event := range gotToolEvents {
+		gotNames = append(gotNames, string(event.Type)+":"+event.ToolName)
+	}
+	if !slices.Contains(gotNames, string(EventToolStart)+":search_internal") {
+		t.Fatalf("tool events = %v, want contains %q", gotNames, string(EventToolStart)+":search_internal")
+	}
+	if !slices.Contains(gotNames, string(EventToolEnd)+":search_internal") {
+		t.Fatalf("tool events = %v, want contains %q", gotNames, string(EventToolEnd)+":search_internal")
+	}
+}
+
 func TestSessionAskStreamEmitterPanicReturnsError(t *testing.T) {
 	t.Parallel()
 

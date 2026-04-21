@@ -12,12 +12,19 @@ type ToolObserver interface {
 	OnToolEnd(ctx context.Context, tool string, err error) error
 }
 
+// ToolCallLimiter limits tool call attempts during one request.
+type ToolCallLimiter interface {
+	Acquire(tool string) error
+}
+
 // Request 表示内部 graph 层的请求输入。
 type Request struct {
-	Query        string
-	History      []memory.Turn
-	EvidenceText string
-	ToolObserver ToolObserver
+	Query                     string
+	History                   []memory.Turn
+	EvidenceText              string
+	ResponseFormatInstruction string
+	ToolObserver              ToolObserver
+	ToolCallLimiter           ToolCallLimiter
 }
 
 // EventType 标识 graph 层流式事件类型。

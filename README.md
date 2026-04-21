@@ -106,6 +106,8 @@ func main() {
   说明：可选 runtime 注入；支持注入 `ChatModel`、`Embedder`
 - `Storage`
   说明：可选存储/加载/rerank 注入；支持注入 `VectorStore`、`DocumentLoader`、`Reranker`
+- `ToolRegistry`
+  说明：可选工具注册表；支持注册或覆写工具
 - `TraceRecorder`
   说明：可选单次执行 trace sink
 - `Logger`
@@ -124,7 +126,7 @@ func main() {
 - `HybridCandidateMultiplier` 必须是正数。
 - `HybridRRFK` 必须是正数。
 - `RerankShortlistMultiplier` 必须是正数。
-- `MaxToolCalls` 目前在 Phase 1 里保留字段，但还没有真正接入运行时控制。
+- `MaxToolCalls` 现在会真实约束工具调用次数：本地检索算一次，后续 fallback 工具链中的每次工具尝试也各算一次。
 - `PDFOCRBridge` 只有在你要导入扫描版 PDF 时才需要配置；如果配置了，`Args` 必须同时包含 `{input}` 和 `{output}` 占位符。
 
 ## 自定义 runtime 注入
@@ -214,6 +216,57 @@ cfg := ragagent.Config{
 ```
 
 如果你有自己的向量库、文档加载器或重排器，只要实现根包公开的接口即可。默认行为不变，只有你显式注入的部分会被覆盖。
+
+## Embedded Mode 与 Server Mode
+
+当前库支持两种向量存储模式：
+
+- `embedded mode`
+  默认模式，使用 `chromem-go`
+  适合单机、本地优先、零外部数据库依赖
+- `server mode`
+  可选模式，使用 `PostgreSQL/pgvector`
+  适合多实例共享知识库、持久化备份、数据库运维和服务端部署
+
+如果你不注入 `Config.Storage.VectorStore`，库会继续使用默认的 embedded mode。
+
+### PostgreSQL / pgvector
+
+你可以通过 `NewPGVectorStore(...)` 把 PostgreSQL/pgvector 注入到现有 `Agent` 主流程中：
+
+```go
+store, err := ragagent.NewPGVectorStore(ragagent.PGVectorStoreConfig{
+	ConnString: "postgres://user:pass@127.0.0.1:5432/rag?sslmode=disable",
+	TableName:  "knowledge_chunks",
+	Dimensions: 1536,
+})
+if err != nil {
+	log.Fatalf("new pgvector store: %v", err)
+}
+
+cfg := ragagent.Config{
+	ChatModel:      "gpt-4o-mini",
+	ChatBaseURL:    "https://api.openai.example/v1",
+	ChatAPIKey:     "replace-with-your-chat-key",
+	EmbeddingModel: "text-embedding-3-small",
+	EmbeddingAPIKey:"replace-with-your-embedding-key",
+	Storage: ragagent.StorageComponents{
+		VectorStore:    store,
+		DocumentLoader: ragagent.NewFileDocumentLoader(),
+		Reranker:       ragagent.NewRuleBasedReranker(),
+	},
+}
+```
+
+当前第一版约束：
+- `Dimensions` 必填
+- 第一版只正式支持 `DistanceMetric="cosine"`
+- 默认索引策略是 `none`，即 exact search
+- `HNSW` / `IVFFlat` 是可选后续索引策略，不会默认启用
+
+集成测试说明：
+- PostgreSQL/pgvector integration tests 通过环境变量 `RAGAGENT_PGVECTOR_TEST_DSN` 启用
+- 未设置该环境变量时，相关 integration tests 会自动跳过
 
 ## 知识导入流程
 
@@ -444,6 +497,51 @@ cfg := ragagent.Config{
 - 远程搜索结果当前作为工具文本提供给模型，不进入 `Answer.Citations`
 - 本地证据充足时不会主动联网搜索
 
+## 工具注册表
+
+当前库已经开放根包 `Tool` 与 `ToolRegistry`。
+
+默认工具：
+- `retrieve_context`
+  说明：本地检索工具，默认始终存在
+- `search_web`
+  说明：当 `EnableWebSearch=true` 且调用方未覆写时，默认注册 Tavily 搜索工具
+
+你可以通过 `Config.ToolRegistry` 注册自定义 fallback 工具，或用同名工具覆写默认实现。
+
+示例：
+
+```go
+type myTool struct{}
+
+func (myTool) Name() string { return "search_internal" }
+func (myTool) Description() string { return "Search internal services" }
+func (myTool) Run(ctx context.Context, input string) (string, error) {
+	return "internal result", nil
+}
+
+registry := ragagent.NewToolRegistry()
+if err := registry.Register(myTool{}); err != nil {
+	log.Fatalf("register tool: %v", err)
+}
+
+cfg := ragagent.Config{
+	ChatModel:      "gpt-4o-mini",
+	ChatBaseURL:    "https://api.openai.example/v1",
+	ChatAPIKey:     "replace-with-your-chat-key",
+	EmbeddingModel: "text-embedding-3-small",
+	EmbeddingAPIKey:"replace-with-your-embedding-key",
+	ToolRegistry:   registry,
+}
+```
+
+工具执行语义：
+- 本地检索始终优先
+- 只有在本地证据不足时，才会进入 fallback 工具链
+- fallback 工具按注册顺序尝试
+- 如果调用方注册同名 `search_web`，会覆写默认 web 工具
+- 这轮仍然不是完整的 ReAct/tool-calling agent loop；当前工具链主要用于 evidence-empty fallback
+
 ## 可观测性与降级
 
 当前库除了基础 `Callback` 生命周期回调外，还支持三类可选回调接口：
@@ -567,6 +665,43 @@ cfg := ragagent.Config{
 ```
 
 如果你希望输出日志摘要，可以配置 `Config.Logger`。库不会自己初始化日志实例；未提供 logger 时保持 no-op。
+
+## 结构化输出
+
+当前库支持同步结构化输出：
+- `AskStructured(ctx, query, target)`
+- `AskStructuredWithOptions(ctx, query, opts, target)`
+
+使用方式是传入一个非 nil 指针目标，库会：
+1. 继续走现有 RAG 检索链
+2. 要求模型只返回 JSON
+3. 尝试从模型文本中提取 JSON
+4. 把 JSON 反序列化到你提供的目标结构
+
+示例：
+
+```go
+type Summary struct {
+	Summary string `json:"summary"`
+	Score   int    `json:"score"`
+}
+
+var out Summary
+result, err := agent.GetSession("demo").AskStructured(ctx, "总结一下文档", &out)
+if err != nil {
+	log.Fatalf("ask structured: %v", err)
+}
+
+fmt.Println(out.Summary)
+fmt.Println(result.RawJSON)
+fmt.Println(result.Answer.Citations)
+```
+
+当前约束：
+- `target` 必须是非 nil 指针
+- 当前只支持同步结构化输出，不支持流式结构化输出
+- 第一版不接模型原生 function-calling / JSON schema 协议
+- 模型如果返回 fenced code block 或前后带说明文字，库会尝试提取其中的首个有效 JSON
 
 ## 回归评测
 
@@ -699,8 +834,9 @@ if err := agent.AddKnowledge(ctx, src); err != nil {
 
 ## 自定义工具扩展
 
-Phase 1 的公开 API 还没有开放自定义工具注册能力。
+当前库已经通过 `Config.ToolRegistry` 开放自定义工具注册能力。
 
-当前的扩展点仍然在内部接线：`agent.go` 里会把 `tools.NewRetrievalTool(...)` 和可选的 `tools.NewWebSearchTool(...)` 传给 `graph.NewChatRunner(...)`。
-
-如果你现在就要加自定义工具，建议在内部 fork / 自定义接线层里扩展，并保持 retrieval tool 的兼容性。
+现阶段限制：
+- 当前工具注册表主要服务于 evidence-empty fallback 工具链
+- 不是完整的模型驱动任意工具调用协议
+- `retrieve_context` 仍然由主流程优先执行，不由模型自由选择

@@ -2,11 +2,13 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/gtkit/go-rag-agent/internal/llm"
 	"github.com/gtkit/go-rag-agent/internal/memory"
+	"github.com/gtkit/go-rag-agent/internal/tools"
 )
 
 type fakeChatModel struct {
@@ -60,6 +62,19 @@ func (f *fakeTool) Run(_ context.Context, input string) (string, error) {
 	return f.result, f.err
 }
 
+type fakeToolCallLimiter struct {
+	limit int
+	used  int
+}
+
+func (l *fakeToolCallLimiter) Acquire(string) error {
+	if l.used >= l.limit {
+		return context.DeadlineExceeded
+	}
+	l.used++
+	return nil
+}
+
 func TestBuildPromptMessages(t *testing.T) {
 	t.Parallel()
 
@@ -105,7 +120,7 @@ func TestBuildPromptMessages(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := buildPromptMessages(tt.history, tt.evidence, tt.query)
+			got := buildPromptMessages(tt.history, tt.evidence, tt.query, "")
 			if len(got) != len(tt.wantRoles) {
 				t.Fatalf("buildPromptMessages() len = %d, want %d", len(got), len(tt.wantRoles))
 			}
@@ -167,11 +182,11 @@ func TestChatRunnerAskUsesPlainModelWhenEvidenceProvided(t *testing.T) {
 			fm := &fakeChatModel{answer: "model-only answer"}
 			webTool := &fakeTool{name: "search_web", description: "search the web"}
 			runner := &ChatRunner{
-				model:   fm,
-				webTool: nil,
+				model:         fm,
+				fallbackTools: nil,
 			}
 			if !tt.wantErr {
-				runner.webTool = webTool
+				runner.fallbackTools = []tools.Tool{webTool}
 			}
 
 			got, err := runner.Ask(context.Background(), tt.req)
@@ -228,8 +243,8 @@ func TestChatRunnerAskUsesWebToolWhenEvidenceMissing(t *testing.T) {
 				result:      tt.webResult,
 			}
 			runner := &ChatRunner{
-				model:   fm,
-				webTool: webTool,
+				model:         fm,
+				fallbackTools: []tools.Tool{webTool},
 			}
 
 			got, err := runner.Ask(context.Background(), Request{
@@ -258,6 +273,65 @@ func TestChatRunnerAskUsesWebToolWhenEvidenceMissing(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestChatRunnerAskUsesFallbackToolsInOrder(t *testing.T) {
+	t.Parallel()
+
+	fm := &fakeChatModel{answer: "answer from model"}
+	firstTool := &fakeTool{
+		name:        "search_internal",
+		description: "search internal",
+		err:         errors.New("internal down"),
+	}
+	secondTool := &fakeTool{
+		name:        "search_web",
+		description: "search web",
+		result:      "fallback web result",
+	}
+
+	runner, err := NewChatRunner(fm, firstTool, secondTool)
+	if err != nil {
+		t.Fatalf("NewChatRunner() error = %v", err)
+	}
+
+	got, err := runner.Ask(context.Background(), Request{
+		Query:        "latest redis patterns",
+		EvidenceText: "",
+	})
+	if err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+	if got != "answer from model" {
+		t.Fatalf("Ask() answer = %q, want %q", got, "answer from model")
+	}
+	if firstTool.calls != 1 || secondTool.calls != 1 {
+		t.Fatalf("fallback tool calls = (%d, %d), want (1, 1)", firstTool.calls, secondTool.calls)
+	}
+}
+
+func TestChatRunnerAskRespectsToolCallLimit(t *testing.T) {
+	t.Parallel()
+
+	fm := &fakeChatModel{answer: "answer from model"}
+	webTool := &fakeTool{
+		name:        "search_web",
+		description: "search web",
+		result:      "fallback web result",
+	}
+	runner, err := NewChatRunner(fm, webTool)
+	if err != nil {
+		t.Fatalf("NewChatRunner() error = %v", err)
+	}
+
+	_, err = runner.Ask(context.Background(), Request{
+		Query:           "latest redis patterns",
+		EvidenceText:    "",
+		ToolCallLimiter: &fakeToolCallLimiter{limit: 0},
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Ask() error = %v, want %v", err, context.DeadlineExceeded)
 	}
 }
 
@@ -295,8 +369,8 @@ func TestChatRunnerAskStreamUsesWebToolWhenEvidenceMissing(t *testing.T) {
 				result: tt.webResult,
 			}
 			runner := &ChatRunner{
-				model:   fm,
-				webTool: webTool,
+				model:         fm,
+				fallbackTools: []tools.Tool{webTool},
 			}
 
 			var events []Event
