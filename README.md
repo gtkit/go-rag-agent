@@ -110,6 +110,8 @@ func main() {
   说明：可选长期记忆注入；支持注入 `LongTermMemoryStore`
 - `ToolRegistry`
   说明：可选工具注册表；支持注册或覆写工具
+- `ProviderGovernance`
+  说明：provider 级错误分类、重试/退避和 usage/cost 聚合配置
 - `TraceRecorder`
   说明：可选单次执行 trace sink
 - `Logger`
@@ -147,6 +149,12 @@ func main() {
   说明：长期记忆检索条数上限，默认 `3`
 - `LongTermMemoryThreshold`
   说明：长期记忆相似度阈值，默认 `0`
+- `ProviderGovernance.RetryMaxAttempts`
+  说明：provider 调用最大尝试次数，默认 `2`
+- `ProviderGovernance.RetryBaseDelay`
+  说明：provider 重试基础退避时间，默认 `200ms`
+- `ProviderGovernance.RetryMaxDelay`
+  说明：provider 重试最大退避时间，默认 `2s`
 - `PDFOCRBridge` 只有在你要导入扫描版 PDF 时才需要配置；如果配置了，`Args` 必须同时包含 `{input}` 和 `{output}` 占位符。
 
 ## 自定义 runtime 注入
@@ -725,6 +733,58 @@ cfg := ragagent.Config{
 ```
 
 如果你希望输出日志摘要，可以配置 `Config.Logger`。库不会自己初始化日志实例；未提供 logger 时保持 no-op。
+
+## Provider 治理与 usage/cost 聚合
+
+当前库已经在 provider 层增加三件事：
+- 错误分类
+- 有限次重试与退避
+- usage/cost 聚合
+
+覆盖范围：
+- OpenAI-compatible chat
+- OpenAI-compatible embedding
+- Tavily web search
+
+示例：
+
+```go
+cfg := ragagent.Config{
+	ChatModel:      "gpt-4o-mini",
+	ChatBaseURL:    "https://api.openai.example/v1",
+	ChatAPIKey:     "replace-with-your-chat-key",
+	EmbeddingModel: "text-embedding-3-small",
+	EmbeddingAPIKey:"replace-with-your-embedding-key",
+	ProviderGovernance: ragagent.ProviderGovernanceConfig{
+		RetryMaxAttempts: 2,
+		RetryBaseDelay:   200 * time.Millisecond,
+		RetryMaxDelay:    2 * time.Second,
+		Pricing: ragagent.ProviderPricingConfig{
+			ChatModels: map[string]ragagent.TokenPricing{
+				"gpt-4o-mini": {
+					InputUSDPer1K:  0.01,
+					OutputUSDPer1K: 0.02,
+				},
+			},
+			EmbeddingModels: map[string]ragagent.TokenPricing{
+				"text-embedding-3-small": {
+					InputUSDPer1K: 0.0001,
+				},
+			},
+			WebSearchPerCallUSD: 0,
+		},
+	},
+}
+```
+
+当前语义：
+- `429`、瞬时网络错误、部分 `5xx` 会被识别为可重试错误
+- stream 只有在尚未输出任何 chunk 时才允许自动重试
+- provider usage / estimated cost 会聚合到 `ExecutionTrace.ProviderCalls`
+
+当前限制：
+- 这轮还没有做 provider 限流
+- 这轮还没有做断路器
 
 ## 上下文窗口治理与提示硬化
 

@@ -48,8 +48,9 @@ func (m *OpenAIChatModel) Generate(ctx context.Context, input []Message) (Messag
 	}
 
 	return Message{
-		Role:    RoleAssistant,
-		Content: resp.Choices[0].Content,
+		Role:           RoleAssistant,
+		Content:        resp.Choices[0].Content,
+		GenerationInfo: resp.Choices[0].GenerationInfo,
 	}, nil
 }
 

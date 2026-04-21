@@ -75,11 +75,12 @@ func newWebSearcher(cfg Config) websearch.Searcher {
 			httpc.WithLogger(cfg.Logger),
 		)
 	}
-	return websearch.NewTavilyClient(httpClient, websearch.TavilyConfig{
+	searcher := websearch.NewTavilyClient(httpClient, websearch.TavilyConfig{
 		BaseURL:     searchCfg.BaseURL,
 		APIKey:      searchCfg.APIKey,
 		MaxResults:  searchCfg.MaxResults,
 		SearchDepth: searchCfg.SearchDepth,
 		Topic:       searchCfg.Topic,
 	})
+	return newResilientSearcher(searcher, cfg.ProviderGovernance, "tavily")
 }

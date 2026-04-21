@@ -247,6 +247,7 @@ func New(cfg Config) (*Agent, error) {
 			return nil, fmt.Errorf("create embedder: %w", err)
 		}
 	}
+	embedder = newResilientEmbedder(embedder, cfg.ProviderGovernance, "openai", cfg.EmbeddingModel)
 
 	chatModel := cfg.Runtime.ChatModel
 	if chatModel == nil {
@@ -261,6 +262,7 @@ func New(cfg Config) (*Agent, error) {
 			return nil, fmt.Errorf("create chat model: %w", err)
 		}
 	}
+	chatModel = newResilientChatModel(chatModel, cfg.ProviderGovernance, "openai", cfg.ChatModel)
 
 	chunker, err := rag.NewChunker(cfg.ChunkSize, cfg.ChunkOverlap)
 	if err != nil {
@@ -794,6 +796,9 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 
 	rewrittenQuery := rag.RewriteFollowUp(query, s.history.LastUserQueries())
 	trace := newExecutionTraceBuilder(s.id, query, rewrittenQuery, opts.Filter, false)
+	ctx = withProviderTraceObserver(ctx, func(call ProviderCallTrace) {
+		trace.addProviderCall(call)
+	})
 	budget := newToolCallBudget(a.cfg.MaxToolCalls)
 	defer func() {
 		if trace == nil {
@@ -893,6 +898,9 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 	}
 
 	trace := newExecutionTraceBuilder(s.id, query, rag.RewriteFollowUp(query, s.history.LastUserQueries()), opts.Filter, true)
+	ctx = withProviderTraceObserver(ctx, func(call ProviderCallTrace) {
+		trace.addProviderCall(call)
+	})
 	budget := newToolCallBudget(a.cfg.MaxToolCalls)
 	emitEvent := func(event StreamEvent) error {
 		event.Timestamp = time.Now()

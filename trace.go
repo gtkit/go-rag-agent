@@ -16,23 +16,40 @@ type ToolTrace struct {
 	Err        error
 }
 
+// ProviderCallTrace 描述一次 provider 调用摘要。
+type ProviderCallTrace struct {
+	Provider         string
+	Operation        string
+	Model            string
+	Attempts         int
+	Duration         time.Duration
+	ErrorClass       string
+	InputTokens      int
+	OutputTokens     int
+	TotalTokens      int
+	EstimatedCostUSD float64
+	Err              error
+}
+
 // ExecutionTrace 描述一次同步或流式问答的聚合执行信息。
 type ExecutionTrace struct {
-	SessionID      string
-	Query          string
-	RewrittenQuery string
-	Filter         RetrievalFilter
-	StartedAt      time.Time
-	FinishedAt     time.Time
-	Duration       time.Duration
-	Stream         bool
-	Success        bool
-	Err            error
-	Retrieval      RetrievalMetrics
-	Model          ModelMetrics
-	ToolCalls      []ToolTrace
-	Fallbacks      []FallbackEvent
-	Citations      []Citation
+	SessionID             string
+	Query                 string
+	RewrittenQuery        string
+	Filter                RetrievalFilter
+	StartedAt             time.Time
+	FinishedAt            time.Time
+	Duration              time.Duration
+	Stream                bool
+	Success               bool
+	Err                   error
+	Retrieval             RetrievalMetrics
+	Model                 ModelMetrics
+	ToolCalls             []ToolTrace
+	ProviderCalls         []ProviderCallTrace
+	TotalEstimatedCostUSD float64
+	Fallbacks             []FallbackEvent
+	Citations             []Citation
 }
 
 // TraceRecorder 接收单次执行结束后的结构化 trace。
@@ -107,6 +124,14 @@ func (b *executionTraceBuilder) setCitations(citations []Citation) {
 		return
 	}
 	b.trace.Citations = slices.Clone(citations)
+}
+
+func (b *executionTraceBuilder) addProviderCall(call ProviderCallTrace) {
+	if b == nil {
+		return
+	}
+	b.trace.ProviderCalls = append(b.trace.ProviderCalls, call)
+	b.trace.TotalEstimatedCostUSD += call.EstimatedCostUSD
 }
 
 func (b *executionTraceBuilder) finish(err error) ExecutionTrace {

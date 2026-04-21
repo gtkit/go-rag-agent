@@ -19,8 +19,9 @@ const (
 
 // Message 表示聊天模型输入输出消息。
 type Message struct {
-	Role    Role
-	Content string
+	Role           Role
+	Content        string
+	GenerationInfo map[string]any
 }
 
 // ChatModel 表示当前项目使用的聊天模型抽象。

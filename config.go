@@ -50,6 +50,7 @@ type Config struct {
 	Runtime                   RuntimeComponents
 	Storage                   StorageComponents
 	Memory                    MemoryComponents
+	ProviderGovernance        ProviderGovernanceConfig
 	ToolRegistry              *ToolRegistry
 	PDFOCRBridge              PDFOCRBridgeConfig
 	WebSearch                 WebSearchConfig
@@ -124,6 +125,7 @@ func (c Config) normalized() Config {
 	c.DataDir = strings.TrimSpace(c.DataDir)
 	c.PDFOCRBridge = c.PDFOCRBridge.normalized()
 	c.WebSearch = c.WebSearch.normalized()
+	c.ProviderGovernance = c.ProviderGovernance.normalized()
 	return c
 }
 
@@ -195,6 +197,15 @@ func (c Config) Validate() error {
 	}
 	if c.MaxToolCalls <= 0 {
 		return fmt.Errorf("max tool calls must be positive: %w", ErrInvalidConfig)
+	}
+	if c.ProviderGovernance.RetryMaxAttempts <= 0 {
+		return fmt.Errorf("provider retry max attempts must be positive: %w", ErrInvalidConfig)
+	}
+	if c.ProviderGovernance.RetryBaseDelay <= 0 {
+		return fmt.Errorf("provider retry base delay must be positive: %w", ErrInvalidConfig)
+	}
+	if c.ProviderGovernance.RetryMaxDelay <= 0 {
+		return fmt.Errorf("provider retry max delay must be positive: %w", ErrInvalidConfig)
 	}
 	if c.MaxIterations <= 0 {
 		return fmt.Errorf("max iterations must be positive: %w", ErrInvalidConfig)

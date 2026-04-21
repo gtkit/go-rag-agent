@@ -9,6 +9,25 @@
 
 ## [Unreleased]
 
+## [v0.6.0] - 2026-04-21
+
+### Added
+- provider 级治理能力：
+  - `ProviderGovernanceConfig`
+  - provider 错误分类
+  - provider 级有限次重试与退避
+- execution trace 新增 provider usage / cost 聚合：
+  - `ProviderCallTrace`
+  - `ExecutionTrace.ProviderCalls`
+  - `ExecutionTrace.TotalEstimatedCostUSD`
+
+### Changed
+- OpenAI-compatible chat、embedding 和 Tavily web search 都接入 provider 治理
+- README 补充 provider 治理与 usage/cost 说明
+
+### Fixed
+- 修复 provider usage 聚合接入后对旧 graph 和零值请求的兼容性问题
+
 ## [v0.5.0] - 2026-04-21
 
 ### Added
