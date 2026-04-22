@@ -87,6 +87,16 @@ func TestPGVectorStoreConfigValidate(t *testing.T) {
 			},
 			wantErr: ErrInvalidConfig,
 		},
+		{
+			name: "rejects non-positive upsert batch size",
+			cfg: PGVectorStoreConfig{
+				ConnString:      "postgres://user:pass@127.0.0.1:5432/dbname?sslmode=disable",
+				TableName:       "knowledge_chunks",
+				Dimensions:      1536,
+				UpsertBatchSize: -1,
+			},
+			wantErr: ErrInvalidConfig,
+		},
 	}
 
 	for _, tc := range tests {
@@ -134,6 +144,7 @@ func TestPGVectorStoreConfigNormalized(t *testing.T) {
 				AutoCreateTable:     true,
 				AutoCreateIndexes:   true,
 				IndexStrategy:       "none",
+				UpsertBatchSize:     200,
 				HNSWM:               16,
 				HNSWEfConstruction:  64,
 				HNSWEfSearch:        100,
@@ -153,6 +164,7 @@ func TestPGVectorStoreConfigNormalized(t *testing.T) {
 				got.AutoCreateSchema != tc.want.AutoCreateSchema ||
 				got.AutoCreateTable != tc.want.AutoCreateTable ||
 				got.AutoCreateIndexes != tc.want.AutoCreateIndexes ||
+				got.UpsertBatchSize != tc.want.UpsertBatchSize ||
 				got.HNSWM != tc.want.HNSWM ||
 				got.HNSWEfConstruction != tc.want.HNSWEfConstruction ||
 				got.HNSWEfSearch != tc.want.HNSWEfSearch {

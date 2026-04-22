@@ -113,6 +113,18 @@ func (s *capturingRootVectorStoreStub) SearchWithFilter(_ context.Context, _ []f
 		if len(filter.SourcePaths) > 0 && !slices.Contains(filter.SourcePaths, hit.Chunk.SourcePath) {
 			continue
 		}
+		if len(filter.SourcePrefixes) > 0 {
+			matchedPrefix := false
+			for _, prefix := range filter.SourcePrefixes {
+				if strings.HasPrefix(hit.Chunk.SourcePath, prefix) {
+					matchedPrefix = true
+					break
+				}
+			}
+			if !matchedPrefix {
+				continue
+			}
+		}
 		matched := true
 		for key, value := range filter.Metadata {
 			if hit.Chunk.Metadata[key] != value {
@@ -136,6 +148,25 @@ func (s *capturingRootVectorStoreStub) DeleteBySourcePaths(_ context.Context, _ 
 }
 
 func (s *capturingRootVectorStoreStub) Close() error { return nil }
+
+type fakeAccessPolicy struct {
+	transformFile func(context.Context, KnowledgeFile) (KnowledgeFile, error)
+	filterQuery   func(context.Context, AccessPolicyRequest) (RetrievalFilter, error)
+}
+
+func (p fakeAccessPolicy) TransformKnowledgeFile(ctx context.Context, file KnowledgeFile) (KnowledgeFile, error) {
+	if p.transformFile == nil {
+		return file, nil
+	}
+	return p.transformFile(ctx, file)
+}
+
+func (p fakeAccessPolicy) ConstrainRetrieval(ctx context.Context, req AccessPolicyRequest) (RetrievalFilter, error) {
+	if p.filterQuery == nil {
+		return req.Filter, nil
+	}
+	return p.filterQuery(ctx, req)
+}
 
 func filterHitsForTest(hits []storage.SearchHit, filter storage.SearchFilter, topK int, threshold float32) []storage.SearchHit {
 	if len(hits) == 0 {
@@ -460,6 +491,137 @@ func TestAskAppliesAccessBoundarySourcePaths(t *testing.T) {
 	})
 	if !errors.Is(err, ErrEvidenceInsufficient) {
 		t.Fatalf("AskWithOptions() error = %v, want errors.Is(..., %v)", err, ErrEvidenceInsufficient)
+	}
+}
+
+func TestAddKnowledgeAppliesDynamicAccessPolicy(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	path := root + "/knowledge.md"
+	if err := os.WriteFile(path, []byte("# Doc\n\npolicy content"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", path, err)
+	}
+
+	store := &capturingRootVectorStoreStub{}
+	a, err := New(Config{
+		Runtime: RuntimeComponents{
+			ChatModel: stubRuntimeChatModel{},
+			Embedder:  stubRuntimeEmbedder{},
+		},
+		Storage: StorageComponents{
+			VectorStore: store,
+		},
+		AccessBoundary: AccessBoundaryConfig{
+			Policy: fakeAccessPolicy{
+				transformFile: func(_ context.Context, file KnowledgeFile) (KnowledgeFile, error) {
+					if file.Metadata == nil {
+						file.Metadata = map[string]string{}
+					}
+					file.Metadata["team"] = "alpha"
+					return file, nil
+				},
+			},
+		},
+		TopK:             1,
+		ChunkSize:        64,
+		ChunkOverlap:     0,
+		MaxHistoryRounds: 8,
+		RequestTimeout:   time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := a.Close(); cerr != nil {
+			t.Fatalf("Close() error = %v", cerr)
+		}
+	})
+
+	if err := a.AddKnowledge(context.Background(), FileSource(path)); err != nil {
+		t.Fatalf("AddKnowledge() error = %v", err)
+	}
+	if len(store.upserts) == 0 || len(store.upserts[0]) == 0 {
+		t.Fatal("upsert batches are empty")
+	}
+	if got := store.upserts[0][0].Metadata["team"]; got != "alpha" {
+		t.Fatalf("stored dynamic policy metadata = %q, want %q", got, "alpha")
+	}
+}
+
+func TestAskAppliesDynamicAccessPolicyFilter(t *testing.T) {
+	t.Parallel()
+
+	a, err := New(Config{
+		ChatModel: "gpt-4o-mini",
+		Runtime: RuntimeComponents{
+			ChatModel: stubRuntimeChatModel{},
+			Embedder:  stubRuntimeEmbedder{},
+		},
+		Storage: StorageComponents{
+			VectorStore: &capturingRootVectorStoreStub{
+				hits: []SearchHit{
+					{
+						Chunk: ChunkRecord{
+							ChunkID:    "doc:0",
+							ParentID:   "doc",
+							SourcePath: "/tenant-a/doc.md",
+							Title:      "doc-a",
+							Text:       "tenant a evidence",
+							StartRune:  0,
+							EndRune:    17,
+						},
+						Score: 0.99,
+					},
+					{
+						Chunk: ChunkRecord{
+							ChunkID:    "doc:1",
+							ParentID:   "doc",
+							SourcePath: "/tenant-b/doc.md",
+							Title:      "doc-b",
+							Text:       "tenant b evidence",
+							StartRune:  0,
+							EndRune:    17,
+						},
+						Score: 0.98,
+					},
+				},
+			},
+		},
+		AccessBoundary: AccessBoundaryConfig{
+			AllowedSourcePrefixes: []string{"/tenant-b/"},
+			Policy: fakeAccessPolicy{
+				filterQuery: func(_ context.Context, req AccessPolicyRequest) (RetrievalFilter, error) {
+					return RetrievalFilter{
+						SourcePaths: []string{"/tenant-a/doc.md", "/tenant-b/doc.md"},
+					}, nil
+				},
+			},
+		},
+		TopK:             1,
+		ChunkSize:        64,
+		ChunkOverlap:     0,
+		MaxHistoryRounds: 8,
+		RequestTimeout:   time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := a.Close(); cerr != nil {
+			t.Fatalf("Close() error = %v", cerr)
+		}
+	})
+
+	answer, err := a.GetSession("dynamic-policy").Ask(context.Background(), "question")
+	if err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+	if len(answer.Citations) != 1 {
+		t.Fatalf("citations len = %d, want 1", len(answer.Citations))
+	}
+	if answer.Citations[0].SourcePath != "/tenant-b/doc.md" {
+		t.Fatalf("citation source path = %q, want %q", answer.Citations[0].SourcePath, "/tenant-b/doc.md")
 	}
 }
 

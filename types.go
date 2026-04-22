@@ -121,9 +121,16 @@ type RetrievalFilter struct {
 	Metadata       map[string]string
 }
 
+// MemoryScope 定义长期记忆的 user/tenant 分层范围。
+type MemoryScope struct {
+	UserID string
+	Tenant string
+}
+
 // QueryOptions 定义单次问答的可选执行参数。
 type QueryOptions struct {
-	Filter RetrievalFilter
+	Filter      RetrievalFilter
+	MemoryScope MemoryScope
 }
 
 // StreamEvent 是流式执行回调的事件载荷。

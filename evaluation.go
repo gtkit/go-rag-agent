@@ -2,6 +2,8 @@ package ragagent
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -55,6 +57,31 @@ type StructuredEvalResult struct {
 	StructuredOutputValid bool
 	Passed                bool
 	Err                   error
+}
+
+// StructuredEvalSummary 汇总结构化输出评测结果。
+type StructuredEvalSummary struct {
+	TotalCases                int
+	PassedCases               int
+	StructuredOutputValidRate float64
+}
+
+// EvalReport 表示一次完整评测报告。
+type EvalReport struct {
+	Summary           EvalSummary
+	Results           []EvalResult
+	StructuredSummary StructuredEvalSummary
+	StructuredResults []StructuredEvalResult
+}
+
+// EvalThresholds 定义评测门禁阈值。
+type EvalThresholds struct {
+	MinRetrievalRecall           float64
+	MinCitationPrecision         float64
+	MinGroundedness              float64
+	MinAnswerMatchRate           float64
+	MinStructuredOutputValidRate float64
+	MaxFailures                  int
 }
 
 // RunEvalSuite 执行一组同步问答评测。
@@ -123,6 +150,122 @@ func RunStructuredEvalSuite(ctx context.Context, agent *Agent, cases []Structure
 	return results, nil
 }
 
+// SummarizeStructuredEvalResults 汇总结构化输出评测结果。
+func SummarizeStructuredEvalResults(results []StructuredEvalResult) StructuredEvalSummary {
+	summary := StructuredEvalSummary{TotalCases: len(results)}
+	for _, result := range results {
+		if result.Passed {
+			summary.PassedCases++
+		}
+		if result.StructuredOutputValid {
+			summary.StructuredOutputValidRate++
+		}
+	}
+	if len(results) > 0 {
+		summary.StructuredOutputValidRate /= float64(len(results))
+	}
+	return summary
+}
+
+// MarshalEvalReportJSON 将评测报告编码为 JSON。
+func MarshalEvalReportJSON(report EvalReport) ([]byte, error) {
+	type answerJSON struct {
+		Text      string     `json:"text"`
+		Citations []Citation `json:"citations,omitempty"`
+	}
+	type evalResultJSON struct {
+		Name              string     `json:"name"`
+		Answer            answerJSON `json:"answer"`
+		RetrievalRecall   float64    `json:"retrieval_recall"`
+		CitationPrecision float64    `json:"citation_precision"`
+		Groundedness      float64    `json:"groundedness"`
+		AnswerMatch       bool       `json:"answer_match"`
+		Passed            bool       `json:"passed"`
+		Err               string     `json:"err,omitempty"`
+	}
+	type structuredResultJSON struct {
+		Name                  string `json:"name"`
+		RawJSON               string `json:"raw_json"`
+		StructuredOutputValid bool   `json:"structured_output_valid"`
+		Passed                bool   `json:"passed"`
+		Err                   string `json:"err,omitempty"`
+	}
+	payload := struct {
+		Summary           EvalSummary            `json:"summary"`
+		Results           []evalResultJSON       `json:"results"`
+		StructuredSummary StructuredEvalSummary  `json:"structured_summary"`
+		StructuredResults []structuredResultJSON `json:"structured_results"`
+	}{
+		Summary:           report.Summary,
+		StructuredSummary: report.StructuredSummary,
+		Results:           make([]evalResultJSON, 0, len(report.Results)),
+		StructuredResults: make([]structuredResultJSON, 0, len(report.StructuredResults)),
+	}
+	for _, result := range report.Results {
+		payload.Results = append(payload.Results, evalResultJSON{
+			Name: result.Name,
+			Answer: answerJSON{
+				Text:      result.Answer.Text,
+				Citations: result.Answer.Citations,
+			},
+			RetrievalRecall:   result.RetrievalRecall,
+			CitationPrecision: result.CitationPrecision,
+			Groundedness:      result.Groundedness,
+			AnswerMatch:       result.AnswerMatch,
+			Passed:            result.Passed,
+			Err:               errString(result.Err),
+		})
+	}
+	for _, result := range report.StructuredResults {
+		payload.StructuredResults = append(payload.StructuredResults, structuredResultJSON{
+			Name:                  result.Name,
+			RawJSON:               result.Answer.RawJSON,
+			StructuredOutputValid: result.StructuredOutputValid,
+			Passed:                result.Passed,
+			Err:                   errString(result.Err),
+		})
+	}
+	return json.MarshalIndent(payload, "", "  ")
+}
+
+// CheckEvalThresholds 校验评测摘要是否满足阈值。
+func CheckEvalThresholds(report EvalReport, thresholds EvalThresholds) error {
+	if thresholds.MaxFailures >= 0 {
+		failures := report.Summary.TotalCases - report.Summary.PassedCases
+		if failures > thresholds.MaxFailures {
+			return fmt.Errorf("eval failures %d exceed max %d", failures, thresholds.MaxFailures)
+		}
+	}
+	if report.Summary.RetrievalRecall < thresholds.MinRetrievalRecall {
+		return fmt.Errorf("retrieval recall %.3f is below min %.3f", report.Summary.RetrievalRecall, thresholds.MinRetrievalRecall)
+	}
+	if report.Summary.CitationPrecision < thresholds.MinCitationPrecision {
+		return fmt.Errorf("citation precision %.3f is below min %.3f", report.Summary.CitationPrecision, thresholds.MinCitationPrecision)
+	}
+	if report.Summary.Groundedness < thresholds.MinGroundedness {
+		return fmt.Errorf("groundedness %.3f is below min %.3f", report.Summary.Groundedness, thresholds.MinGroundedness)
+	}
+	if report.Summary.AnswerMatchRate < thresholds.MinAnswerMatchRate {
+		return fmt.Errorf("answer match rate %.3f is below min %.3f", report.Summary.AnswerMatchRate, thresholds.MinAnswerMatchRate)
+	}
+	if report.StructuredSummary.StructuredOutputValidRate < thresholds.MinStructuredOutputValidRate {
+		return fmt.Errorf("structured output valid rate %.3f is below min %.3f", report.StructuredSummary.StructuredOutputValidRate, thresholds.MinStructuredOutputValidRate)
+	}
+	return nil
+}
+
+// CompareEvalReportWithBaseline 校验当前评测摘要不低于基线。
+func CompareEvalReportWithBaseline(report EvalReport, baseline EvalReport) error {
+	return CheckEvalThresholds(report, EvalThresholds{
+		MinRetrievalRecall:           baseline.Summary.RetrievalRecall,
+		MinCitationPrecision:         baseline.Summary.CitationPrecision,
+		MinGroundedness:              baseline.Summary.Groundedness,
+		MinAnswerMatchRate:           baseline.Summary.AnswerMatchRate,
+		MinStructuredOutputValidRate: baseline.StructuredSummary.StructuredOutputValidRate,
+		MaxFailures:                  baseline.Summary.TotalCases - baseline.Summary.PassedCases,
+	})
+}
+
 func scoreRecall(citations []Citation, wantSources []string) float64 {
 	if len(wantSources) == 0 {
 		return 1
@@ -188,4 +331,11 @@ func defaultString(value string, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

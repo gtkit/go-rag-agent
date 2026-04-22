@@ -149,6 +149,10 @@ func main() {
   说明：历史压缩摘要预算上限，默认 `256`
 - `MaxMemoryTokens`
   说明：长期记忆回灌预算上限，默认 `512`
+- `LongTermMemoryTTL`
+  说明：长期记忆 TTL；`<= 0` 表示不过期
+- `LongTermMemoryMaxStoredRunes`
+  说明：长期记忆写入前的本地压缩上限，默认 `512`
 - `EnablePromptHardening`
   说明：是否对检索文本和工具回灌内容做基础 prompt injection 硬化，默认开启
 - `LongTermMemoryTopK`
@@ -308,6 +312,9 @@ cfg := ragagent.Config{
 
 默认实现：
 - `NewInMemoryPromptCache()`
+- `NewInMemoryPromptCacheWithConfig(cfg)`
+- `NewRedisPromptCache(client, cfg)`
+- `NewTwoLevelPromptCache(local, remote)`
 
 示例：
 
@@ -317,10 +324,38 @@ cfg := ragagent.Config{
 }
 ```
 
+自定义边界：
+
+```go
+cache := ragagent.NewInMemoryPromptCacheWithConfig(ragagent.PromptCacheConfig{
+	MaxEntries: 512,
+	TTL:        10 * time.Minute,
+})
+```
+
 当前语义：
 - 命中 cache 时会跳过重复的 prompt messages 构造
 - `ExecutionTrace.PromptCacheHit` 会标记本次是否命中本地 cache
 - 这是本地 prompt artifact cache，不是 provider-native prompt cache
+- 默认内存实现已经是有界缓存，具备 `LRU + TTL + max entries`
+
+Redis 两级缓存示例：
+
+```go
+local := ragagent.NewInMemoryPromptCacheWithConfig(ragagent.PromptCacheConfig{
+	MaxEntries: 512,
+	TTL:        10 * time.Minute,
+})
+
+remote := ragagent.NewRedisPromptCache(redisClient, ragagent.RedisPromptCacheConfig{
+	KeyPrefix: "ragagent:prompt",
+	TTL:       30 * time.Minute,
+})
+
+cfg := ragagent.Config{
+	PromptCache: ragagent.NewTwoLevelPromptCache(local, remote),
+}
+```
 
 ## Access Boundary
 
@@ -340,6 +375,38 @@ cfg := ragagent.Config{
 - 导入知识时会把 namespace 写入 chunk metadata
 - 检索时会自动把 namespace 与 allowed source 边界合并进 filter
 - query 不能越过配置允许的来源范围
+
+动态 policy hook 示例：
+
+```go
+type myPolicy struct{}
+
+func (myPolicy) TransformKnowledgeFile(_ context.Context, file ragagent.KnowledgeFile) (ragagent.KnowledgeFile, error) {
+	if file.Metadata == nil {
+		file.Metadata = map[string]string{}
+	}
+	file.Metadata["team"] = "alpha"
+	return file, nil
+}
+
+func (myPolicy) ConstrainRetrieval(_ context.Context, req ragagent.AccessPolicyRequest) (ragagent.RetrievalFilter, error) {
+	return ragagent.RetrievalFilter{
+		SourcePrefixes: []string{"/kb/alpha/"},
+	}, nil
+}
+
+cfg := ragagent.Config{
+	AccessBoundary: ragagent.AccessBoundaryConfig{
+		Namespace: "tenant-a",
+		Policy:    myPolicy{},
+	},
+}
+```
+
+当前语义补充：
+- 动态 policy 可以在导入时增强 `KnowledgeFile`
+- 动态 policy 可以在检索时收敛 `RetrievalFilter`
+- 静态 `Namespace` / `AllowedSourcePaths` / `AllowedSourcePrefixes` 仍然是最终上界
 
 ## Eval Runner
 
@@ -416,10 +483,33 @@ cfg := ragagent.Config{
 - 后续问答前，会按当前 query 检索同 Session 的长期记忆
 - 命中的长期记忆会以 `Relevant long-term memory` 独立块注入 prompt
 - 如果你把长期记忆接到持久化 `VectorStore`，长期记忆也会跨进程保留
+- 相同 session/user/tenant 下相同内容的长期记忆会做确定性去重
+- `LongTermMemoryTTL` 配置后，过期记忆不会再参与检索
+- 超长 query/answer 会按 `LongTermMemoryMaxStoredRunes` 做本地确定性压缩
+- 可以通过 `QueryOptions.MemoryScope` 继续按 user/tenant 分层；tenant 为空时回退到 `AccessBoundary.Namespace`
 
 当前限制：
 - 第一版只做同 Session 长期记忆，不做跨 Session 共享
 - 默认实现仍然是进程内存；持久化需要显式注入 `NewVectorLongTermMemoryStore(...)`
+
+相关配置：
+- `LongTermMemoryTTL`
+  说明：长期记忆 TTL；`<= 0` 表示不过期
+- `LongTermMemoryMaxStoredRunes`
+  说明：长期记忆写入前的本地压缩上限，默认 `512`
+
+按 user/tenant 分层示例：
+
+```go
+answer, err := session.AskWithOptions(ctx, "follow up", ragagent.QueryOptions{
+	MemoryScope: ragagent.MemoryScope{
+		UserID: "user-a",
+		Tenant: "tenant-a",
+	},
+})
+_ = answer
+_ = err
+```
 
 示例：复用持久化 `pgvector` 作为长期记忆后端
 
@@ -531,7 +621,13 @@ if err != nil {
 - 第一版只正式支持 `DistanceMetric="cosine"`
 - 默认索引策略是 `none`，即 exact search
 - `HNSW` / `IVFFlat` 是可选后续索引策略，不会默认启用
+- `UpsertBatchSize` 控制单次写入 batch 大小，默认 `200`
 - `ConnString`、`Pool`、`PGORMConfig`、`PGORMClient` 四种连接来源必须且只能提供一种
+
+生产建议：
+- knowledge 与 long-term memory 最好分表，而不是共用同一张 `pgvector` 表
+- 默认先从 `IndexStrategy=none` 起步，数据量上来后再切 `HNSW`
+- 如果是高频导入场景，优先调 `UpsertBatchSize` 再考虑更重的导入机制
 
 集成测试说明：
 - PostgreSQL/pgvector integration tests 通过环境变量 `RAGAGENT_PGVECTOR_TEST_DSN` 启用

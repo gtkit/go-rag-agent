@@ -255,6 +255,10 @@ func (a *Agent) AddKnowledge(ctx context.Context, src KnowledgeSource) error {
 		loader = NewFileDocumentLoader()
 	}
 	for _, file := range files {
+		file, err = a.cfg.AccessBoundary.applyToKnowledgeFile(ctx, file)
+		if err != nil {
+			return fmt.Errorf("apply access boundary to knowledge file %q: %w", file.Path, err)
+		}
 		currentSourcePaths = append(currentSourcePaths, file.Path)
 
 		doc, err := loader.Load(ctx, file.Path, file.Title, file.Metadata, a.documentLoadOptions())

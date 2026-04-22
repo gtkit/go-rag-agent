@@ -1,6 +1,7 @@
 package ragagent
 
 import (
+	"context"
 	"maps"
 	"slices"
 	"strings"
@@ -16,6 +17,21 @@ type AccessBoundaryConfig struct {
 	Namespace             string
 	AllowedSourcePaths    []string
 	AllowedSourcePrefixes []string
+	Policy                AccessPolicy
+}
+
+// AccessPolicyRequest 描述一次动态 access policy 请求。
+type AccessPolicyRequest struct {
+	SessionID   string
+	Query       string
+	Filter      RetrievalFilter
+	MemoryScope MemoryScope
+}
+
+// AccessPolicy 定义 access boundary 的动态 hook。
+type AccessPolicy interface {
+	TransformKnowledgeFile(ctx context.Context, file KnowledgeFile) (KnowledgeFile, error)
+	ConstrainRetrieval(ctx context.Context, req AccessPolicyRequest) (RetrievalFilter, error)
 }
 
 func (c AccessBoundaryConfig) normalized() AccessBoundaryConfig {
@@ -55,8 +71,34 @@ func applyNamespaceMetadata(metadata map[string]string, namespace string) map[st
 	return out
 }
 
-func (c AccessBoundaryConfig) applyToFilter(filter storage.SearchFilter) storage.SearchFilter {
+func (c AccessBoundaryConfig) applyToKnowledgeFile(ctx context.Context, file KnowledgeFile) (KnowledgeFile, error) {
 	c = c.normalized()
+	if c.Policy != nil {
+		next, err := c.Policy.TransformKnowledgeFile(ctx, file)
+		if err != nil {
+			return KnowledgeFile{}, err
+		}
+		file = next
+	}
+	file.Metadata = applyNamespaceMetadata(file.Metadata, c.Namespace)
+	return file, nil
+}
+
+func (c AccessBoundaryConfig) applyToRetrieval(ctx context.Context, req AccessPolicyRequest) (storage.SearchFilter, error) {
+	c = c.normalized()
+	filter := c.applyStaticToRootFilter(req.Filter)
+	req.Filter = filter
+	if c.Policy != nil {
+		next, err := c.Policy.ConstrainRetrieval(ctx, req)
+		if err != nil {
+			return storage.SearchFilter{}, err
+		}
+		filter = c.applyStaticToRootFilter(next)
+	}
+	return toInternalRetrievalFilter(filter), nil
+}
+
+func (c AccessBoundaryConfig) applyStaticToRootFilter(filter RetrievalFilter) RetrievalFilter {
 	filter.Metadata = maps.Clone(filter.Metadata)
 	if c.Namespace != "" {
 		if filter.Metadata == nil {

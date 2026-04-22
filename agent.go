@@ -655,7 +655,6 @@ func (a *Agent) newGraphToolObserver(s *Session, trace *executionTraceBuilder, e
 }
 
 func (a *Agent) retrieve(ctx context.Context, s *Session, query string, filter storage.SearchFilter, trace *executionTraceBuilder, budget *toolCallBudget) ([]storage.SearchHit, string, error) {
-	filter = a.cfg.AccessBoundary.applyToFilter(filter)
 	if err := budget.Acquire(retrieveToolName); err != nil {
 		return nil, "", err
 	}
@@ -764,6 +763,19 @@ func (a *Agent) retrieve(ctx context.Context, s *Session, query string, filter s
 	return keptHits, evidence, nil
 }
 
+func (a *Agent) accessBoundaryFilter(ctx context.Context, sessionID string, query string, opts QueryOptions) (storage.SearchFilter, error) {
+	filter, err := a.cfg.AccessBoundary.applyToRetrieval(ctx, AccessPolicyRequest{
+		SessionID:   sessionID,
+		Query:       query,
+		Filter:      opts.Filter,
+		MemoryScope: opts.MemoryScope,
+	})
+	if err != nil {
+		return storage.SearchFilter{}, fmt.Errorf("apply access boundary: %w", err)
+	}
+	return filter, nil
+}
+
 func citationsFromHits(hits []storage.SearchHit) []Citation {
 	citations := make([]Citation, 0, len(hits))
 	for _, hit := range hits {
@@ -838,7 +850,11 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 		}
 	}()
 
-	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery, opts.storageFilter(), trace, budget)
+	filter, err := a.accessBoundaryFilter(ctx, s.id, rewrittenQuery, opts)
+	if err != nil {
+		return Answer{}, err
+	}
+	hits, evidenceText, err := a.retrieve(ctx, s, rewrittenQuery, filter, trace, budget)
 	err = normalizeExecutionBudgetError(ctx, err)
 	if err != nil {
 		if a.hasFallbackTools() && errors.Is(err, ErrEvidenceInsufficient) {
@@ -848,7 +864,7 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 			return Answer{}, err
 		}
 	}
-	longTermMemoryText, err := a.retrieveLongTermMemory(ctx, s.id, rewrittenQuery)
+	longTermMemoryText, err := a.retrieveLongTermMemory(ctx, s.id, rewrittenQuery, opts)
 	err = normalizeExecutionBudgetError(ctx, err)
 	if err != nil {
 		return Answer{}, err
@@ -900,7 +916,7 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 	if trace != nil {
 		trace.setCitations(citations)
 	}
-	if err := a.storeLongTermMemory(ctx, s.id, query, answerText); err != nil {
+	if err := a.storeLongTermMemory(ctx, s.id, query, answerText, opts); err != nil {
 		return Answer{}, err
 	}
 	return Answer{
@@ -949,7 +965,10 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 	}
 
 	rewrittenQuery := trace.trace.RewrittenQuery
-	filter := opts.storageFilter()
+	filter, err := a.accessBoundaryFilter(ctx, s.id, rewrittenQuery, opts)
+	if err != nil {
+		return "", err
+	}
 	if err := emitEvent(StreamEvent{Type: EventRetrieveStart, Content: rewrittenQuery}); err != nil {
 		return "", err
 	}
@@ -973,7 +992,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 			return "", emitError(err)
 		}
 	}
-	longTermMemoryText, err := a.retrieveLongTermMemory(ctx, s.id, rewrittenQuery)
+	longTermMemoryText, err := a.retrieveLongTermMemory(ctx, s.id, rewrittenQuery, opts)
 	err = normalizeExecutionBudgetError(ctx, err)
 	if err != nil {
 		return "", err
@@ -1069,7 +1088,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 	if err := a.recordExecutionTrace(ctx, s, finalTrace); err != nil {
 		return "", err
 	}
-	if err := a.storeLongTermMemory(ctx, s.id, query, answerBuilder.String()); err != nil {
+	if err := a.storeLongTermMemory(ctx, s.id, query, answerBuilder.String(), opts); err != nil {
 		return "", err
 	}
 
@@ -1200,7 +1219,7 @@ func normalizeExecutionBudgetError(ctx context.Context, err error) error {
 	return err
 }
 
-func (a *Agent) retrieveLongTermMemory(ctx context.Context, sessionID string, query string) (string, error) {
+func (a *Agent) retrieveLongTermMemory(ctx context.Context, sessionID string, query string, opts QueryOptions) (string, error) {
 	if a.longTermMemory == nil || a.cfg.LongTermMemoryTopK == 0 {
 		return "", nil
 	}
@@ -1215,6 +1234,7 @@ func (a *Agent) retrieveLongTermMemory(ctx context.Context, sessionID string, qu
 	if err != nil {
 		return "", fmt.Errorf("search long-term memory: %w", err)
 	}
+	hits = filterLongTermMemoryHits(hits, opts.MemoryScope.normalized(a.cfg.AccessBoundary.Namespace), time.Now())
 	if len(hits) == 0 {
 		return "", nil
 	}
@@ -1231,11 +1251,13 @@ func (a *Agent) retrieveLongTermMemory(ctx context.Context, sessionID string, qu
 	return builder.String(), nil
 }
 
-func (a *Agent) storeLongTermMemory(ctx context.Context, sessionID string, query string, answer string) error {
+func (a *Agent) storeLongTermMemory(ctx context.Context, sessionID string, query string, answer string, opts QueryOptions) error {
 	if a.longTermMemory == nil {
 		return nil
 	}
-	content := strings.TrimSpace(query) + "\n" + strings.TrimSpace(answer)
+	scope := opts.MemoryScope.normalized(a.cfg.AccessBoundary.Namespace)
+	compressedUser, compressedAssistant := compressLongTermMemoryTurn(query, answer, a.cfg.LongTermMemoryMaxStoredRunes)
+	content := strings.TrimSpace(compressedUser) + "\n" + strings.TrimSpace(compressedAssistant)
 	rows, err := a.embedder.EmbedTexts(ctx, []string{content})
 	if err != nil {
 		return fmt.Errorf("embed long-term memory record: %w", err)
@@ -1243,14 +1265,48 @@ func (a *Agent) storeLongTermMemory(ctx context.Context, sessionID string, query
 	if len(rows) != 1 || len(rows[0]) == 0 {
 		return fmt.Errorf("long-term memory record embedding is empty")
 	}
+	now := time.Now()
+	expiresAt := time.Time{}
+	if a.cfg.LongTermMemoryTTL > 0 {
+		expiresAt = now.Add(a.cfg.LongTermMemoryTTL)
+	}
 	return a.longTermMemory.Store(ctx, []LongTermMemoryRecord{
 		{
-			ID:        fmt.Sprintf("%s:%d", sessionID, time.Now().UnixNano()),
+			ID:        buildLongTermMemoryID(sessionID, scope, compressedUser, compressedAssistant),
 			SessionID: sessionID,
-			User:      query,
-			Assistant: answer,
+			UserID:    scope.UserID,
+			Tenant:    scope.Tenant,
+			User:      compressedUser,
+			Assistant: compressedAssistant,
 			Embedding: rows[0],
-			CreatedAt: time.Now(),
+			CreatedAt: now,
+			ExpiresAt: expiresAt,
 		},
 	})
+}
+
+func filterLongTermMemoryHits(hits []LongTermMemoryHit, scope MemoryScope, now time.Time) []LongTermMemoryHit {
+	if len(hits) == 0 {
+		return nil
+	}
+	filtered := make([]LongTermMemoryHit, 0, len(hits))
+	for _, hit := range hits {
+		if isLongTermMemoryExpired(hit.Memory, now) {
+			continue
+		}
+		if scope.UserID != "" && hit.Memory.UserID != scope.UserID {
+			continue
+		}
+		if scope.Tenant != "" && hit.Memory.Tenant != scope.Tenant {
+			continue
+		}
+		if scope.UserID == "" && hit.Memory.UserID != "" {
+			continue
+		}
+		if scope.Tenant == "" && hit.Memory.Tenant != "" {
+			continue
+		}
+		filtered = append(filtered, hit)
+	}
+	return filtered
 }

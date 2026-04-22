@@ -282,6 +282,27 @@ func TestConfigValidate(t *testing.T) {
 			},
 			wantErr: ErrInvalidConfig,
 		},
+		{
+			name: "long-term memory ttl must be non-negative",
+			mutate: func(cfg *Config) {
+				cfg.LongTermMemoryTTL = -time.Second
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "long-term memory max stored runes must be positive",
+			mutate: func(cfg *Config) {
+				cfg.LongTermMemoryMaxStoredRunes = 0
+			},
+			wantErr: nil,
+		},
+		{
+			name: "long-term memory max stored runes rejects negative",
+			mutate: func(cfg *Config) {
+				cfg.LongTermMemoryMaxStoredRunes = -1
+			},
+			wantErr: ErrInvalidConfig,
+		},
 	}
 
 	for _, tc := range tests {

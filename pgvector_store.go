@@ -27,6 +27,7 @@ const (
 	defaultPGVectorEfSearch    = 100
 	defaultPGVectorLists       = 100
 	defaultPGVectorProbes      = 10
+	defaultPGVectorUpsertBatch = 200
 )
 
 // PGVectorStoreConfig 定义 PostgreSQL/pgvector store 的构造配置。
@@ -44,6 +45,7 @@ type PGVectorStoreConfig struct {
 	AutoCreateTable     bool
 	AutoCreateIndexes   bool
 	IndexStrategy       string
+	UpsertBatchSize     int
 	HNSWM               int
 	HNSWEfConstruction  int
 	HNSWEfSearch        int
@@ -66,6 +68,9 @@ func (c PGVectorStoreConfig) normalized() PGVectorStoreConfig {
 	}
 	if c.IndexStrategy == "" {
 		c.IndexStrategy = pgVectorIndexNone
+	}
+	if c.UpsertBatchSize == 0 {
+		c.UpsertBatchSize = defaultPGVectorUpsertBatch
 	}
 	if !c.AutoCreateExtension {
 		c.AutoCreateExtension = true
@@ -120,6 +125,9 @@ func (c PGVectorStoreConfig) validate() error {
 	case pgVectorIndexNone, pgVectorIndexHNSW, pgVectorIndexIVFFlat:
 	default:
 		return fmt.Errorf("pgvector index strategy %q is unsupported: %w", c.IndexStrategy, ErrInvalidConfig)
+	}
+	if c.UpsertBatchSize <= 0 {
+		return fmt.Errorf("pgvector upsert batch size must be positive: %w", ErrInvalidConfig)
 	}
 	return nil
 }
@@ -335,23 +343,35 @@ ON CONFLICT (chunk_id) DO UPDATE SET
     embedding = EXCLUDED.embedding,
     updated_at = now()`
 
-	for _, chunk := range chunks {
-		metadataJSON, err := marshalMetadataJSON(chunk.Metadata)
-		if err != nil {
-			return fmt.Errorf("marshal chunk metadata: %w", err)
+	for start := 0; start < len(chunks); start += s.cfg.UpsertBatchSize {
+		end := min(start+s.cfg.UpsertBatchSize, len(chunks))
+		var batch pgx.Batch
+		for _, chunk := range chunks[start:end] {
+			metadataJSON, err := marshalMetadataJSON(chunk.Metadata)
+			if err != nil {
+				return fmt.Errorf("marshal chunk metadata: %w", err)
+			}
+			batch.Queue(fmt.Sprintf(upsertSQL, s.tableName),
+				chunk.ChunkID,
+				chunk.ParentID,
+				chunk.SourcePath,
+				chunk.Title,
+				chunk.Text,
+				chunk.StartRune,
+				chunk.EndRune,
+				metadataJSON,
+				pgvector.NewVector(chunk.Embedding).String(),
+			)
 		}
-		if _, err := tx.Exec(ctx, fmt.Sprintf(upsertSQL, s.tableName),
-			chunk.ChunkID,
-			chunk.ParentID,
-			chunk.SourcePath,
-			chunk.Title,
-			chunk.Text,
-			chunk.StartRune,
-			chunk.EndRune,
-			metadataJSON,
-			pgvector.NewVector(chunk.Embedding).String(),
-		); err != nil {
-			return fmt.Errorf("upsert pgvector chunk %q: %w", chunk.ChunkID, err)
+		results := tx.SendBatch(ctx, &batch)
+		for _, chunk := range chunks[start:end] {
+			if _, err := results.Exec(); err != nil {
+				_ = results.Close()
+				return fmt.Errorf("upsert pgvector chunk %q: %w", chunk.ChunkID, err)
+			}
+		}
+		if err := results.Close(); err != nil {
+			return fmt.Errorf("close pgvector upsert batch: %w", err)
 		}
 	}
 

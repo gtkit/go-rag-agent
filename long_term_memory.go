@@ -2,6 +2,8 @@ package ragagent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"slices"
@@ -19,10 +21,13 @@ type MemoryComponents struct {
 type LongTermMemoryRecord struct {
 	ID        string
 	SessionID string
+	UserID    string
+	Tenant    string
 	User      string
 	Assistant string
 	Embedding []float32
 	CreatedAt time.Time
+	ExpiresAt time.Time
 }
 
 // LongTermMemoryHit 表示一次长期记忆检索结果。
@@ -45,10 +50,13 @@ type inMemoryLongTermMemoryStore struct {
 }
 
 const (
-	longTermMemorySourcePrefix     = "/ragagent/memory/"
-	longTermMemoryMetadataUserKey  = "rag_memory_user"
-	longTermMemoryMetadataReplyKey = "rag_memory_assistant"
-	longTermMemoryMetadataTimeKey  = "rag_memory_created_at"
+	longTermMemorySourcePrefix      = "/ragagent/memory/"
+	longTermMemoryMetadataUserIDKey = "rag_memory_user_id"
+	longTermMemoryMetadataTenantKey = "rag_memory_tenant"
+	longTermMemoryMetadataUserKey   = "rag_memory_user"
+	longTermMemoryMetadataReplyKey  = "rag_memory_assistant"
+	longTermMemoryMetadataTimeKey   = "rag_memory_created_at"
+	longTermMemoryMetadataExpireKey = "rag_memory_expires_at"
 )
 
 // NewInMemoryLongTermMemoryStore 创建默认 in-memory 长期记忆实现。
@@ -86,14 +94,29 @@ func (s *inMemoryLongTermMemoryStore) Store(ctx context.Context, records []LongT
 		if len(record.Embedding) == 0 {
 			return fmt.Errorf("memory embedding is required")
 		}
-		s.records = append(s.records, LongTermMemoryRecord{
+		normalized := LongTermMemoryRecord{
 			ID:        record.ID,
 			SessionID: record.SessionID,
+			UserID:    record.UserID,
+			Tenant:    record.Tenant,
 			User:      record.User,
 			Assistant: record.Assistant,
 			Embedding: slices.Clone(record.Embedding),
 			CreatedAt: record.CreatedAt,
-		})
+			ExpiresAt: record.ExpiresAt,
+		}
+		replaced := false
+		for i := range s.records {
+			if s.records[i].ID != normalized.ID {
+				continue
+			}
+			s.records[i] = normalized
+			replaced = true
+			break
+		}
+		if !replaced {
+			s.records = append(s.records, normalized)
+		}
 	}
 	return nil
 }
@@ -112,6 +135,9 @@ func (s *inMemoryLongTermMemoryStore) Search(ctx context.Context, sessionID stri
 		if record.SessionID != sessionID {
 			continue
 		}
+		if isLongTermMemoryExpired(record, time.Now()) {
+			continue
+		}
 		score, ok := cosineSimilarity(queryEmbedding, record.Embedding)
 		if !ok || score < threshold {
 			continue
@@ -120,10 +146,13 @@ func (s *inMemoryLongTermMemoryStore) Search(ctx context.Context, sessionID stri
 			Memory: LongTermMemoryRecord{
 				ID:        record.ID,
 				SessionID: record.SessionID,
+				UserID:    record.UserID,
+				Tenant:    record.Tenant,
 				User:      record.User,
 				Assistant: record.Assistant,
 				Embedding: slices.Clone(record.Embedding),
 				CreatedAt: record.CreatedAt,
+				ExpiresAt: record.ExpiresAt,
 			},
 			Score: score,
 		})
@@ -206,9 +235,12 @@ func (s *vectorLongTermMemoryStore) Store(ctx context.Context, records []LongTer
 			StartRune:  0,
 			EndRune:    len([]rune(strings.TrimSpace(record.User) + "\n" + strings.TrimSpace(record.Assistant))),
 			Metadata: map[string]string{
-				longTermMemoryMetadataUserKey:  record.User,
-				longTermMemoryMetadataReplyKey: record.Assistant,
-				longTermMemoryMetadataTimeKey:  record.CreatedAt.Format(time.RFC3339Nano),
+				longTermMemoryMetadataUserIDKey: record.UserID,
+				longTermMemoryMetadataTenantKey: record.Tenant,
+				longTermMemoryMetadataUserKey:   record.User,
+				longTermMemoryMetadataReplyKey:  record.Assistant,
+				longTermMemoryMetadataTimeKey:   record.CreatedAt.Format(time.RFC3339Nano),
+				longTermMemoryMetadataExpireKey: formatLongTermMemoryTimestamp(record.ExpiresAt),
 			},
 			Embedding: slices.Clone(record.Embedding),
 		})
@@ -239,6 +271,8 @@ func (s *vectorLongTermMemoryStore) Search(ctx context.Context, sessionID string
 		record := LongTermMemoryRecord{
 			ID:        hit.Chunk.ChunkID,
 			SessionID: sessionID,
+			UserID:    hit.Chunk.Metadata[longTermMemoryMetadataUserIDKey],
+			Tenant:    hit.Chunk.Metadata[longTermMemoryMetadataTenantKey],
 			User:      hit.Chunk.Metadata[longTermMemoryMetadataUserKey],
 			Assistant: hit.Chunk.Metadata[longTermMemoryMetadataReplyKey],
 			Embedding: slices.Clone(hit.Chunk.Embedding),
@@ -248,6 +282,15 @@ func (s *vectorLongTermMemoryStore) Search(ctx context.Context, sessionID string
 			if parseErr == nil {
 				record.CreatedAt = createdAt
 			}
+		}
+		if ts := hit.Chunk.Metadata[longTermMemoryMetadataExpireKey]; ts != "" {
+			expiresAt, parseErr := time.Parse(time.RFC3339Nano, ts)
+			if parseErr == nil {
+				record.ExpiresAt = expiresAt
+			}
+		}
+		if isLongTermMemoryExpired(record, time.Now()) {
+			continue
 		}
 		records = append(records, LongTermMemoryHit{
 			Memory: record,
@@ -279,6 +322,56 @@ func (s *vectorLongTermMemoryStore) Close() error {
 
 func longTermMemorySourcePath(sessionID string) string {
 	return longTermMemorySourcePrefix + strings.TrimSpace(sessionID)
+}
+
+func isLongTermMemoryExpired(record LongTermMemoryRecord, now time.Time) bool {
+	return !record.ExpiresAt.IsZero() && !record.ExpiresAt.After(now)
+}
+
+func formatLongTermMemoryTimestamp(ts time.Time) string {
+	if ts.IsZero() {
+		return ""
+	}
+	return ts.Format(time.RFC3339Nano)
+}
+
+func compressLongTermMemoryTurn(user string, assistant string, maxRunes int) (string, string) {
+	user = strings.Join(strings.Fields(strings.TrimSpace(user)), " ")
+	assistant = strings.Join(strings.Fields(strings.TrimSpace(assistant)), " ")
+	if maxRunes <= 0 {
+		return user, assistant
+	}
+	if len([]rune(user))+len([]rune(assistant)) <= maxRunes {
+		return user, assistant
+	}
+	budgetUser := maxRunes / 2
+	budgetAssistant := maxRunes - budgetUser
+	return trimRunes(user, budgetUser), trimRunes(assistant, budgetAssistant)
+}
+
+func trimRunes(input string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(input)
+	if len(runes) <= maxRunes {
+		return input
+	}
+	if maxRunes <= 3 {
+		return string(runes[:maxRunes])
+	}
+	return string(runes[:maxRunes-3]) + "..."
+}
+
+func buildLongTermMemoryID(sessionID string, scope MemoryScope, user string, assistant string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		strings.TrimSpace(scope.Tenant),
+		strings.TrimSpace(scope.UserID),
+		strings.TrimSpace(sessionID),
+		strings.Join(strings.Fields(strings.TrimSpace(user)), " "),
+		strings.Join(strings.Fields(strings.TrimSpace(assistant)), " "),
+	}, "\n")))
+	return "mem_" + hex.EncodeToString(sum[:16])
 }
 
 func cosineSimilarity(a []float32, b []float32) (float32, bool) {

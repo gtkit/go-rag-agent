@@ -25,43 +25,45 @@ type Config struct {
 	EmbeddingBaseURL string
 	EmbeddingAPIKey  string
 
-	DataDir                   string
-	TopK                      int
-	SimilarityThreshold       float64
-	ChunkSize                 int
-	ChunkOverlap              int
-	MaxHistoryRounds          int
-	MaxToolCalls              int
-	MaxIterations             int
-	RequestTimeout            time.Duration
-	MaxExecutionDuration      time.Duration
-	MaxPromptTokens           int
-	MaxHistoryTokens          int
-	MaxEvidenceTokens         int
-	MaxSummaryTokens          int
-	MaxMemoryTokens           int
-	EnablePromptHardening     bool
-	AccessBoundary            AccessBoundaryConfig
-	EnableHybridSearch        bool
-	EnableRerank              bool
-	EnableWebSearch           bool
-	HybridCandidateMultiplier int
-	HybridRRFK                float64
-	RerankShortlistMultiplier int
-	Runtime                   RuntimeComponents
-	Retrieval                 RetrievalComponents
-	Storage                   StorageComponents
-	Memory                    MemoryComponents
-	ProviderGovernance        ProviderGovernanceConfig
-	PromptCache               PromptCache
-	ToolRegistry              *ToolRegistry
-	PDFOCRBridge              PDFOCRBridgeConfig
-	WebSearch                 WebSearchConfig
-	Logger                    Logger
-	TraceRecorder             TraceRecorder
-	Callbacks                 []Callback
-	LongTermMemoryTopK        int
-	LongTermMemoryThreshold   float64
+	DataDir                      string
+	TopK                         int
+	SimilarityThreshold          float64
+	ChunkSize                    int
+	ChunkOverlap                 int
+	MaxHistoryRounds             int
+	MaxToolCalls                 int
+	MaxIterations                int
+	RequestTimeout               time.Duration
+	MaxExecutionDuration         time.Duration
+	MaxPromptTokens              int
+	MaxHistoryTokens             int
+	MaxEvidenceTokens            int
+	MaxSummaryTokens             int
+	MaxMemoryTokens              int
+	LongTermMemoryTTL            time.Duration
+	LongTermMemoryMaxStoredRunes int
+	EnablePromptHardening        bool
+	AccessBoundary               AccessBoundaryConfig
+	EnableHybridSearch           bool
+	EnableRerank                 bool
+	EnableWebSearch              bool
+	HybridCandidateMultiplier    int
+	HybridRRFK                   float64
+	RerankShortlistMultiplier    int
+	Runtime                      RuntimeComponents
+	Retrieval                    RetrievalComponents
+	Storage                      StorageComponents
+	Memory                       MemoryComponents
+	ProviderGovernance           ProviderGovernanceConfig
+	PromptCache                  PromptCache
+	ToolRegistry                 *ToolRegistry
+	PDFOCRBridge                 PDFOCRBridgeConfig
+	WebSearch                    WebSearchConfig
+	Logger                       Logger
+	TraceRecorder                TraceRecorder
+	Callbacks                    []Callback
+	LongTermMemoryTopK           int
+	LongTermMemoryThreshold      float64
 }
 
 // withDefaults 返回一个应用了 Phase 1 默认值的配置副本。
@@ -99,6 +101,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.MaxMemoryTokens == 0 {
 		c.MaxMemoryTokens = 512
+	}
+	if c.LongTermMemoryMaxStoredRunes == 0 {
+		c.LongTermMemoryMaxStoredRunes = 512
 	}
 	if !c.EnablePromptHardening {
 		c.EnablePromptHardening = true
@@ -177,6 +182,12 @@ func (c Config) Validate() error {
 	}
 	if c.MaxMemoryTokens <= 0 {
 		return fmt.Errorf("max memory tokens must be positive: %w", ErrInvalidConfig)
+	}
+	if c.LongTermMemoryTTL < 0 {
+		return fmt.Errorf("long-term memory ttl must be non-negative: %w", ErrInvalidConfig)
+	}
+	if c.LongTermMemoryMaxStoredRunes <= 0 {
+		return fmt.Errorf("long-term memory max stored runes must be positive: %w", ErrInvalidConfig)
 	}
 	if c.ChunkSize <= 0 {
 		return fmt.Errorf("chunk size must be positive: %w", ErrInvalidConfig)

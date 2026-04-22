@@ -131,6 +131,52 @@ func TestInMemoryLongTermMemoryStore(t *testing.T) {
 	}
 }
 
+func TestInMemoryLongTermMemoryStoreSkipsExpiredRecords(t *testing.T) {
+	t.Parallel()
+
+	store := NewInMemoryLongTermMemoryStore()
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	err := store.Store(context.Background(), []LongTermMemoryRecord{
+		{
+			ID:        "expired",
+			SessionID: "session-a",
+			User:      "old",
+			Assistant: "expired answer",
+			Embedding: []float32{1, 0},
+			CreatedAt: time.Now().Add(-2 * time.Hour),
+			ExpiresAt: time.Now().Add(-time.Hour),
+		},
+		{
+			ID:        "active",
+			SessionID: "session-a",
+			User:      "new",
+			Assistant: "active answer",
+			Embedding: []float32{1, 0},
+			CreatedAt: time.Now(),
+			ExpiresAt: time.Now().Add(time.Hour),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Store() error = %v", err)
+	}
+
+	hits, err := store.Search(context.Background(), "session-a", []float32{1, 0}, 5, 0)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("Search() len = %d, want 1", len(hits))
+	}
+	if hits[0].Memory.ID != "active" {
+		t.Fatalf("Search() top memory id = %q, want %q", hits[0].Memory.ID, "active")
+	}
+}
+
 func TestVectorLongTermMemoryStore(t *testing.T) {
 	t.Parallel()
 
@@ -279,6 +325,7 @@ func TestAskUsesLongTermMemoryAfterShortTermHistoryTrim(t *testing.T) {
 						Text:       "architecture context",
 						StartRune:  0,
 						EndRune:    20,
+						Metadata:   map[string]string{accessBoundaryNamespaceKey: "tenant-a"},
 					},
 					Score: 0.99,
 				},
@@ -310,6 +357,200 @@ func TestAskUsesLongTermMemoryAfterShortTermHistoryTrim(t *testing.T) {
 	runner.mu.Unlock()
 	if !strings.Contains(gotMemory, "first answer") {
 		t.Fatalf("LongTermMemoryText = %q, want contains %q", gotMemory, "first answer")
+	}
+}
+
+func TestStoreLongTermMemoryDeduplicatesByContent(t *testing.T) {
+	t.Parallel()
+
+	store := NewInMemoryLongTermMemoryStore()
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	embedder := &fakeEmbedder{
+		defaultVec: []float32{1, 0},
+		vectors: map[string][]float32{
+			"same query\nsame answer": {1, 0},
+		},
+	}
+	a := &Agent{
+		cfg: Config{
+			LongTermMemoryMaxStoredRunes: 128,
+			AccessBoundary: AccessBoundaryConfig{
+				Namespace: "tenant-a",
+			},
+		},
+		embedder:       embedder,
+		longTermMemory: store,
+	}
+
+	opts := QueryOptions{
+		MemoryScope: MemoryScope{
+			UserID: "user-a",
+		},
+	}
+	if err := a.storeLongTermMemory(context.Background(), "session-a", "same query", "same answer", opts); err != nil {
+		t.Fatalf("first storeLongTermMemory() error = %v", err)
+	}
+	if err := a.storeLongTermMemory(context.Background(), "session-a", "same query", "same answer", opts); err != nil {
+		t.Fatalf("second storeLongTermMemory() error = %v", err)
+	}
+
+	backing := store.(*inMemoryLongTermMemoryStore)
+	backing.mu.RLock()
+	defer backing.mu.RUnlock()
+	if len(backing.records) != 1 {
+		t.Fatalf("records len = %d, want 1", len(backing.records))
+	}
+	if backing.records[0].Tenant != "tenant-a" {
+		t.Fatalf("record tenant = %q, want %q", backing.records[0].Tenant, "tenant-a")
+	}
+	if backing.records[0].UserID != "user-a" {
+		t.Fatalf("record user id = %q, want %q", backing.records[0].UserID, "user-a")
+	}
+}
+
+func TestStoreLongTermMemoryCompressesStoredText(t *testing.T) {
+	t.Parallel()
+
+	store := NewInMemoryLongTermMemoryStore()
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	query := strings.Repeat("query ", 40)
+	answer := strings.Repeat("answer ", 40)
+	embedder := &fakeEmbedder{
+		defaultVec: []float32{1, 0},
+		vectors: map[string][]float32{
+			strings.TrimSpace(query) + "\n" + strings.TrimSpace(answer): {1, 0},
+		},
+	}
+	a := &Agent{
+		cfg: Config{
+			LongTermMemoryMaxStoredRunes: 64,
+		},
+		embedder:       embedder,
+		longTermMemory: store,
+	}
+	if err := a.storeLongTermMemory(context.Background(), "session-a", query, answer, QueryOptions{}); err != nil {
+		t.Fatalf("storeLongTermMemory() error = %v", err)
+	}
+
+	backing := store.(*inMemoryLongTermMemoryStore)
+	backing.mu.RLock()
+	defer backing.mu.RUnlock()
+	if len(backing.records) != 1 {
+		t.Fatalf("records len = %d, want 1", len(backing.records))
+	}
+	combined := backing.records[0].User + backing.records[0].Assistant
+	if len([]rune(combined)) > 64 {
+		t.Fatalf("combined stored runes = %d, want <= 64", len([]rune(combined)))
+	}
+}
+
+func TestAskUsesScopedLongTermMemory(t *testing.T) {
+	t.Parallel()
+
+	store := NewInMemoryLongTermMemoryStore()
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	embedder := &fakeEmbedder{
+		defaultVec: []float32{0, 0},
+		vectors: map[string][]float32{
+			"remember decision\nanswer one": {1, 0},
+			"remember decision":             {1, 0},
+			"follow up":                     {1, 0},
+			"follow up\nanswer two":         {1, 0},
+			"follow up\nanswer three":       {1, 0},
+		},
+	}
+	runner := &fakeRunner{answer: "answer one"}
+	a := &Agent{
+		cfg: Config{
+			ChatModel:                    "memory-model",
+			TopK:                         1,
+			SimilarityThreshold:          0.5,
+			MaxHistoryRounds:             1,
+			LongTermMemoryTopK:           2,
+			LongTermMemoryThreshold:      0,
+			LongTermMemoryMaxStoredRunes: 128,
+			AccessBoundary: AccessBoundaryConfig{
+				Namespace: "tenant-a",
+			},
+		},
+		store: &fakeStore{
+			searchHits: []storage.SearchHit{
+				{
+					Chunk: storage.ChunkRecord{
+						ChunkID:    "doc:0",
+						SourcePath: "/tmp/doc.md",
+						Title:      "doc",
+						Text:       "architecture context",
+						StartRune:  0,
+						EndRune:    20,
+						Metadata:   map[string]string{accessBoundaryNamespaceKey: "tenant-a"},
+					},
+					Score: 0.99,
+				},
+			},
+		},
+		embedder:       embedder,
+		runner:         runner,
+		longTermMemory: store,
+		sessions:       make(map[string]*Session),
+	}
+
+	session := a.GetSession("shared-session")
+	if _, err := session.AskWithOptions(context.Background(), "remember decision", QueryOptions{
+		MemoryScope: MemoryScope{UserID: "user-a"},
+	}); err != nil {
+		t.Fatalf("first AskWithOptions() error = %v", err)
+	}
+	if err := session.ClearHistory(context.Background()); err != nil {
+		t.Fatalf("ClearHistory() error = %v", err)
+	}
+
+	runner.mu.Lock()
+	runner.answer = "answer two"
+	runner.mu.Unlock()
+	if _, err := session.AskWithOptions(context.Background(), "follow up", QueryOptions{
+		MemoryScope: MemoryScope{UserID: "user-b"},
+	}); err != nil {
+		t.Fatalf("second AskWithOptions() error = %v", err)
+	}
+	runner.mu.Lock()
+	noLeak := runner.lastReq.LongTermMemoryText
+	runner.mu.Unlock()
+	if strings.Contains(noLeak, "answer one") {
+		t.Fatalf("LongTermMemoryText leaked across user scope: %q", noLeak)
+	}
+
+	if err := session.ClearHistory(context.Background()); err != nil {
+		t.Fatalf("ClearHistory() second error = %v", err)
+	}
+	runner.mu.Lock()
+	runner.answer = "answer three"
+	runner.mu.Unlock()
+	if _, err := session.AskWithOptions(context.Background(), "follow up", QueryOptions{
+		MemoryScope: MemoryScope{UserID: "user-a"},
+	}); err != nil {
+		t.Fatalf("third AskWithOptions() error = %v", err)
+	}
+	runner.mu.Lock()
+	gotMemory := runner.lastReq.LongTermMemoryText
+	runner.mu.Unlock()
+	if !strings.Contains(gotMemory, "answer one") {
+		t.Fatalf("LongTermMemoryText = %q, want contains %q", gotMemory, "answer one")
 	}
 }
 
