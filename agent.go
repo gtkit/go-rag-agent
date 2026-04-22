@@ -1310,3 +1310,21 @@ func filterLongTermMemoryHits(hits []LongTermMemoryHit, scope MemoryScope, now t
 	}
 	return filtered
 }
+
+// Maintain 执行运行时维护操作，例如清理 prompt cache 和过期长期记忆。
+func (a *Agent) Maintain(ctx context.Context, now time.Time) error {
+	if a == nil {
+		return nil
+	}
+	if maintenance, ok := a.cfg.PromptCache.(PromptCacheMaintenance); ok {
+		if err := maintenance.Clear(ctx); err != nil {
+			return fmt.Errorf("clear prompt cache: %w", err)
+		}
+	}
+	if maintenance, ok := a.longTermMemory.(LongTermMemoryMaintenance); ok {
+		if _, err := maintenance.PruneExpired(ctx, now); err != nil {
+			return fmt.Errorf("prune expired long-term memory: %w", err)
+		}
+	}
+	return nil
+}

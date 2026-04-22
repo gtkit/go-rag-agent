@@ -1,10 +1,13 @@
 package ragagent_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	ragagent "github.com/gtkit/go-rag-agent"
+	"github.com/gtkit/pgorm"
 )
 
 func ExampleConfig_Validate() {
@@ -18,4 +21,186 @@ func ExampleConfig_Validate() {
 	fmt.Println(errors.Is(err, ragagent.ErrInvalidConfig))
 
 	// Output: true
+}
+
+func ExampleSession_Ask() {
+	agent, err := ragagent.New(ragagent.Config{
+		ChatModel: "gpt-4o-mini",
+		Runtime: ragagent.RuntimeComponents{
+			ChatModel: exampleChatModel{},
+			Embedder:  exampleEmbedder{},
+		},
+		Storage: ragagent.StorageComponents{
+			VectorStore: exampleVectorStore{},
+		},
+		TopK:             1,
+		ChunkSize:        64,
+		ChunkOverlap:     0,
+		MaxHistoryRounds: 8,
+		RequestTimeout:   time.Second,
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		_ = agent.Close()
+	}()
+
+	answer, err := agent.GetSession("basic").Ask(context.Background(), "what changed")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(answer.Text)
+	fmt.Println(len(answer.Citations))
+
+	// Output:
+	// ok
+	// 1
+}
+
+type examplePromptCache struct {
+	items map[string][]ragagent.Message
+}
+
+func (c *examplePromptCache) Get(_ context.Context, key string) ([]ragagent.Message, bool) {
+	msgs, ok := c.items[key]
+	return msgs, ok
+}
+
+func (c *examplePromptCache) Set(_ context.Context, key string, messages []ragagent.Message) {
+	if c.items == nil {
+		c.items = make(map[string][]ragagent.Message)
+	}
+	c.items[key] = messages
+}
+
+type exampleChatModel struct{}
+
+func (exampleChatModel) Generate(context.Context, []ragagent.Message) (ragagent.Message, error) {
+	return ragagent.Message{Role: ragagent.RoleAssistant, Content: "ok"}, nil
+}
+
+func (exampleChatModel) Stream(_ context.Context, _ []ragagent.Message, emit func(string) error) error {
+	return emit("ok")
+}
+
+type exampleEmbedder struct{}
+
+func (exampleEmbedder) EmbedTexts(_ context.Context, texts []string) ([][]float32, error) {
+	rows := make([][]float32, 0, len(texts))
+	for range texts {
+		rows = append(rows, []float32{1})
+	}
+	return rows, nil
+}
+
+type exampleVectorStore struct{}
+
+func (exampleVectorStore) Upsert(context.Context, []ragagent.ChunkRecord) error { return nil }
+func (exampleVectorStore) Search(context.Context, []float32, int, float32) ([]ragagent.SearchHit, error) {
+	return []ragagent.SearchHit{
+		{
+			Chunk: ragagent.ChunkRecord{
+				ChunkID:    "doc:0",
+				ParentID:   "doc",
+				SourcePath: "/tmp/doc.md",
+				Title:      "doc",
+				Text:       "example evidence",
+				StartRune:  0,
+				EndRune:    16,
+			},
+			Score: 0.99,
+		},
+	}, nil
+}
+func (exampleVectorStore) SearchWithFilter(context.Context, []float32, int, float32, ragagent.SearchFilter) ([]ragagent.SearchHit, error) {
+	return []ragagent.SearchHit{
+		{
+			Chunk: ragagent.ChunkRecord{
+				ChunkID:    "doc:0",
+				ParentID:   "doc",
+				SourcePath: "/tmp/doc.md",
+				Title:      "doc",
+				Text:       "example evidence",
+				StartRune:  0,
+				EndRune:    16,
+			},
+			Score: 0.99,
+		},
+	}, nil
+}
+func (exampleVectorStore) DeleteBySourcePaths(context.Context, []string) error { return nil }
+func (exampleVectorStore) Close() error                                        { return nil }
+
+func ExampleNewTwoLevelPromptCache() {
+	local := ragagent.NewInMemoryPromptCacheWithConfig(ragagent.PromptCacheConfig{
+		MaxEntries: 16,
+		TTL:        time.Minute,
+	})
+	remote := &examplePromptCache{}
+	cache := ragagent.NewTwoLevelPromptCache(local, remote)
+
+	cache.Set(context.Background(), "key", []ragagent.Message{{Role: ragagent.RoleUser, Content: "hello"}})
+	_, ok := cache.Get(context.Background(), "key")
+	fmt.Println(ok)
+
+	// Output: true
+}
+
+func ExampleRunEvalSuite() {
+	agent, err := ragagent.New(ragagent.Config{
+		ChatModel: "gpt-4o-mini",
+		Runtime: ragagent.RuntimeComponents{
+			ChatModel: exampleChatModel{},
+			Embedder:  exampleEmbedder{},
+		},
+		Storage: ragagent.StorageComponents{
+			VectorStore: exampleVectorStore{},
+		},
+		TopK:             1,
+		ChunkSize:        64,
+		ChunkOverlap:     0,
+		MaxHistoryRounds: 8,
+		RequestTimeout:   time.Second,
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		_ = agent.Close()
+	}()
+
+	summary, _, err := ragagent.RunEvalSuite(context.Background(), agent, []ragagent.EvalCase{
+		{
+			Name:                   "basic",
+			SessionID:              "eval",
+			Query:                  "what changed",
+			WantCitationSources:    []string{"/tmp/doc.md"},
+			WantAnswerContains:     []string{"ok"},
+			WantGroundedSubstrings: []string{"ok"},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(summary.PassedCases)
+
+	// Output: 1
+}
+
+func ExamplePGVectorStoreConfig_pgorm() {
+	pgCfg := pgorm.NewConfig(
+		pgorm.WithDSN("postgres://user:pass@127.0.0.1:5432/rag?sslmode=disable"),
+		pgorm.WithStartupPing(false),
+	)
+
+	cfg := ragagent.PGVectorStoreConfig{
+		PGORMConfig: &pgCfg,
+		TableName:   "knowledge_chunks",
+		Dimensions:  1536,
+	}
+
+	fmt.Println(cfg.TableName)
+
+	// Output: knowledge_chunks
 }

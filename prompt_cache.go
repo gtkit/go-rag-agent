@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -17,6 +18,18 @@ import (
 type PromptCache interface {
 	Get(ctx context.Context, key string) ([]Message, bool)
 	Set(ctx context.Context, key string, messages []Message)
+}
+
+// PromptCacheStats 描述 prompt cache 当前状态。
+type PromptCacheStats struct {
+	Entries int
+}
+
+// PromptCacheMaintenance 定义 prompt cache 的可选维护接口。
+type PromptCacheMaintenance interface {
+	Delete(ctx context.Context, keys ...string) error
+	Clear(ctx context.Context) error
+	Stats(ctx context.Context) (PromptCacheStats, error)
 }
 
 // RedisPromptCacheConfig 定义 Redis prompt cache 配置。
@@ -183,6 +196,52 @@ func (c *inMemoryPromptCache) removeElement(elem *list.Element) {
 	delete(c.items, elem.Value.(*promptCacheEntry).key)
 }
 
+func (c *inMemoryPromptCache) Delete(ctx context.Context, keys ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, key := range keys {
+		if elem, ok := c.items[key]; ok {
+			c.removeElement(elem)
+		}
+	}
+	return nil
+}
+
+func (c *inMemoryPromptCache) Clear(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.items = make(map[string]*list.Element)
+	c.lru.Init()
+	return nil
+}
+
+func (c *inMemoryPromptCache) Stats(ctx context.Context) (PromptCacheStats, error) {
+	if err := ctx.Err(); err != nil {
+		return PromptCacheStats{}, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.removeExpiredLocked()
+	return PromptCacheStats{Entries: len(c.items)}, nil
+}
+
+func (c *inMemoryPromptCache) removeExpiredLocked() {
+	for elem := c.lru.Back(); elem != nil; {
+		prev := elem.Prev()
+		entry := elem.Value.(*promptCacheEntry)
+		if c.expired(entry) {
+			c.removeElement(elem)
+		}
+		elem = prev
+	}
+}
+
 func (c *redisPromptCache) Get(ctx context.Context, key string) ([]Message, bool) {
 	data, err := c.client.Get(ctx, c.redisKey(key)).Bytes()
 	if err != nil {
@@ -205,6 +264,51 @@ func (c *redisPromptCache) Set(ctx context.Context, key string, messages []Messa
 
 func (c *redisPromptCache) redisKey(key string) string {
 	return fmt.Sprintf("%s:%s", c.cfg.KeyPrefix, key)
+}
+
+func (c *redisPromptCache) Delete(ctx context.Context, keys ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	redisKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		redisKeys = append(redisKeys, c.redisKey(key))
+	}
+	if len(redisKeys) == 0 {
+		return nil
+	}
+	return c.client.Del(ctx, redisKeys...).Err()
+}
+
+func (c *redisPromptCache) Clear(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	iter := c.client.Scan(ctx, 0, c.redisKey("*"), 100).Iterator()
+	for iter.Next(ctx) {
+		if err := c.client.Del(ctx, iter.Val()).Err(); err != nil {
+			return err
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *redisPromptCache) Stats(ctx context.Context) (PromptCacheStats, error) {
+	if err := ctx.Err(); err != nil {
+		return PromptCacheStats{}, err
+	}
+	iter := c.client.Scan(ctx, 0, c.redisKey("*"), 100).Iterator()
+	entries := 0
+	for iter.Next(ctx) {
+		entries++
+	}
+	if err := iter.Err(); err != nil {
+		return PromptCacheStats{}, err
+	}
+	return PromptCacheStats{Entries: entries}, nil
 }
 
 func (c *twoLevelPromptCache) Get(ctx context.Context, key string) ([]Message, bool) {
@@ -231,6 +335,38 @@ func (c *twoLevelPromptCache) Set(ctx context.Context, key string, messages []Me
 	if c.remote != nil {
 		c.remote.Set(ctx, key, messages)
 	}
+}
+
+func (c *twoLevelPromptCache) Delete(ctx context.Context, keys ...string) error {
+	var err error
+	if local, ok := c.local.(PromptCacheMaintenance); ok {
+		err = errors.Join(err, local.Delete(ctx, keys...))
+	}
+	if remote, ok := c.remote.(PromptCacheMaintenance); ok {
+		err = errors.Join(err, remote.Delete(ctx, keys...))
+	}
+	return err
+}
+
+func (c *twoLevelPromptCache) Clear(ctx context.Context) error {
+	var err error
+	if local, ok := c.local.(PromptCacheMaintenance); ok {
+		err = errors.Join(err, local.Clear(ctx))
+	}
+	if remote, ok := c.remote.(PromptCacheMaintenance); ok {
+		err = errors.Join(err, remote.Clear(ctx))
+	}
+	return err
+}
+
+func (c *twoLevelPromptCache) Stats(ctx context.Context) (PromptCacheStats, error) {
+	if remote, ok := c.remote.(PromptCacheMaintenance); ok {
+		return remote.Stats(ctx)
+	}
+	if local, ok := c.local.(PromptCacheMaintenance); ok {
+		return local.Stats(ctx)
+	}
+	return PromptCacheStats{}, nil
 }
 
 var _ graph.PromptCache = rootToGraphPromptCache{}

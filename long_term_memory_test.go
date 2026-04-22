@@ -177,6 +177,54 @@ func TestInMemoryLongTermMemoryStoreSkipsExpiredRecords(t *testing.T) {
 	}
 }
 
+func TestInMemoryLongTermMemoryStorePruneExpired(t *testing.T) {
+	t.Parallel()
+
+	store := NewInMemoryLongTermMemoryStore()
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	now := time.Now()
+	err := store.Store(context.Background(), []LongTermMemoryRecord{
+		{
+			ID:        "expired",
+			SessionID: "session-a",
+			User:      "old",
+			Assistant: "expired answer",
+			Embedding: []float32{1, 0},
+			CreatedAt: now.Add(-2 * time.Hour),
+			ExpiresAt: now.Add(-time.Hour),
+		},
+		{
+			ID:        "active",
+			SessionID: "session-a",
+			User:      "new",
+			Assistant: "active answer",
+			Embedding: []float32{1, 0},
+			CreatedAt: now,
+			ExpiresAt: now.Add(time.Hour),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Store() error = %v", err)
+	}
+
+	maint, ok := store.(LongTermMemoryMaintenance)
+	if !ok {
+		t.Fatal("store does not implement LongTermMemoryMaintenance")
+	}
+	pruned, err := maint.PruneExpired(context.Background(), now)
+	if err != nil {
+		t.Fatalf("PruneExpired() error = %v", err)
+	}
+	if pruned != 1 {
+		t.Fatalf("PruneExpired() = %d, want 1", pruned)
+	}
+}
+
 func TestVectorLongTermMemoryStore(t *testing.T) {
 	t.Parallel()
 

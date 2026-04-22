@@ -625,6 +625,71 @@ func TestAskAppliesDynamicAccessPolicyFilter(t *testing.T) {
 	}
 }
 
+func TestAgentMaintain(t *testing.T) {
+	t.Parallel()
+
+	cache := NewInMemoryPromptCache()
+	cache.Set(context.Background(), "a", []Message{{Role: RoleUser, Content: "a"}})
+	memoryStore := NewInMemoryLongTermMemoryStore()
+	now := time.Now()
+	if err := memoryStore.Store(context.Background(), []LongTermMemoryRecord{
+		{
+			ID:        "expired",
+			SessionID: "session-a",
+			User:      "old",
+			Assistant: "expired answer",
+			Embedding: []float32{1, 0},
+			CreatedAt: now.Add(-2 * time.Hour),
+			ExpiresAt: now.Add(-time.Hour),
+		},
+	}); err != nil {
+		t.Fatalf("Store() error = %v", err)
+	}
+
+	a := &Agent{
+		cfg: Config{
+			PromptCache: cache,
+			Memory: MemoryComponents{
+				LongTermMemory: memoryStore,
+			},
+		},
+		longTermMemory: memoryStore,
+	}
+
+	if err := a.Maintain(context.Background(), now); err != nil {
+		t.Fatalf("Maintain() error = %v", err)
+	}
+	if _, ok := cache.Get(context.Background(), "a"); ok {
+		t.Fatal("cache still hit after Maintain, want cleared")
+	}
+	hits, err := memoryStore.Search(context.Background(), "session-a", []float32{1, 0}, 5, 0)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("memory hits len = %d, want 0 after Maintain", len(hits))
+	}
+}
+
+func TestAgentMaintainReturnsPromptCacheError(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("prompt cache maintenance failed")
+	a := &Agent{
+		cfg: Config{
+			PromptCache: failingPromptCacheMaintenance{err: wantErr},
+		},
+	}
+
+	err := a.Maintain(context.Background(), time.Now())
+	if err == nil {
+		t.Fatal("Maintain() error = nil, want prompt cache error")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Maintain() error = %v, want wrapped prompt cache maintenance error", err)
+	}
+}
+
 func (f *fakeRunner) Ask(_ context.Context, req graph.Request) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -633,6 +698,28 @@ func (f *fakeRunner) Ask(_ context.Context, req graph.Request) (string, error) {
 		return "", f.err
 	}
 	return f.answer, nil
+}
+
+type failingPromptCacheMaintenance struct {
+	err error
+}
+
+func (failingPromptCacheMaintenance) Get(context.Context, string) ([]Message, bool) {
+	return nil, false
+}
+
+func (failingPromptCacheMaintenance) Set(context.Context, string, []Message) {}
+
+func (f failingPromptCacheMaintenance) Delete(context.Context, ...string) error {
+	return f.err
+}
+
+func (f failingPromptCacheMaintenance) Clear(context.Context) error {
+	return f.err
+}
+
+func (f failingPromptCacheMaintenance) Stats(context.Context) (PromptCacheStats, error) {
+	return PromptCacheStats{}, f.err
 }
 
 func (f *fakeRunner) AskStream(context.Context, graph.Request, graph.StreamEmitter) error {

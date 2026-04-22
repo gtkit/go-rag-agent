@@ -339,6 +339,12 @@ cache := ragagent.NewInMemoryPromptCacheWithConfig(ragagent.PromptCacheConfig{
 - 这是本地 prompt artifact cache，不是 provider-native prompt cache
 - 默认内存实现已经是有界缓存，具备 `LRU + TTL + max entries`
 
+维护接口：
+- 内存 prompt cache 还支持 `PromptCacheMaintenance`
+- `Delete(ctx, keys...) error`
+- `Clear(ctx) error`
+- `Stats(ctx) (PromptCacheStats, error)`
+
 Redis 两级缓存示例：
 
 ```go
@@ -509,6 +515,18 @@ answer, err := session.AskWithOptions(ctx, "follow up", ragagent.QueryOptions{
 })
 _ = answer
 _ = err
+```
+
+维护接口：
+- in-memory 长期记忆支持 `LongTermMemoryMaintenance`
+- 可显式执行过期清理
+
+统一维护入口：
+
+```go
+if err := agent.Maintain(ctx, time.Now()); err != nil {
+	panic(err)
+}
 ```
 
 示例：复用持久化 `pgvector` 作为长期记忆后端

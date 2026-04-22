@@ -60,3 +60,60 @@ func TestTwoLevelPromptCacheWarmsLocalFromRemote(t *testing.T) {
 		t.Fatalf("local.Get() = %+v, want warmed remote", warmed)
 	}
 }
+
+func TestRedisPromptCacheMaintenanceReturnsError(t *testing.T) {
+	server := miniredis.RunT(t)
+	t.Cleanup(server.Close)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	cache := NewRedisPromptCache(client, RedisPromptCacheConfig{
+		KeyPrefix: "prompt",
+		TTL:       time.Minute,
+	})
+	maint, ok := cache.(PromptCacheMaintenance)
+	if !ok {
+		t.Fatal("cache does not implement PromptCacheMaintenance")
+	}
+
+	server.Close()
+	if err := maint.Clear(context.Background()); err == nil {
+		t.Fatal("Clear() error = nil, want backend error")
+	}
+	if _, err := maint.Stats(context.Background()); err == nil {
+		t.Fatal("Stats() error = nil, want backend error")
+	}
+}
+
+func TestTwoLevelPromptCacheStatsUsesRemoteWhenAvailable(t *testing.T) {
+	server := miniredis.RunT(t)
+	t.Cleanup(server.Close)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	local := NewInMemoryPromptCacheWithConfig(PromptCacheConfig{
+		MaxEntries: 16,
+		TTL:        time.Minute,
+	})
+	remote := NewRedisPromptCache(client, RedisPromptCacheConfig{
+		KeyPrefix: "prompt",
+		TTL:       time.Minute,
+	})
+	twoLevel := NewTwoLevelPromptCache(local, remote)
+
+	local.Set(context.Background(), "local-only", []Message{{Role: RoleUser, Content: "local"}})
+	remote.Set(context.Background(), "shared-a", []Message{{Role: RoleUser, Content: "a"}})
+	remote.Set(context.Background(), "shared-b", []Message{{Role: RoleUser, Content: "b"}})
+
+	maint, ok := twoLevel.(PromptCacheMaintenance)
+	if !ok {
+		t.Fatal("cache does not implement PromptCacheMaintenance")
+	}
+	stats, err := maint.Stats(context.Background())
+	if err != nil {
+		t.Fatalf("Stats() error = %v", err)
+	}
+	if stats.Entries != 2 {
+		t.Fatalf("Stats().Entries = %d, want 2", stats.Entries)
+	}
+}

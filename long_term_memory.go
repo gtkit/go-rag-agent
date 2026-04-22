@@ -44,6 +44,11 @@ type LongTermMemoryStore interface {
 	Close() error
 }
 
+// LongTermMemoryMaintenance 定义长期记忆的可选维护接口。
+type LongTermMemoryMaintenance interface {
+	PruneExpired(ctx context.Context, now time.Time) (int, error)
+}
+
 type inMemoryLongTermMemoryStore struct {
 	mu      sync.RWMutex
 	records []LongTermMemoryRecord
@@ -202,6 +207,25 @@ func (s *inMemoryLongTermMemoryStore) Close() error {
 	defer s.mu.Unlock()
 	s.records = nil
 	return nil
+}
+
+func (s *inMemoryLongTermMemoryStore) PruneExpired(ctx context.Context, now time.Time) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	filtered := s.records[:0]
+	pruned := 0
+	for _, record := range s.records {
+		if isLongTermMemoryExpired(record, now) {
+			pruned++
+			continue
+		}
+		filtered = append(filtered, record)
+	}
+	s.records = filtered
+	return pruned, nil
 }
 
 func (s *vectorLongTermMemoryStore) Store(ctx context.Context, records []LongTermMemoryRecord) error {
