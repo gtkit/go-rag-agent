@@ -29,6 +29,16 @@
   - `ReadEvalReportJSON(path)`
   - `ExecutionTraceSummary`
   - `SummarizeExecutionTrace(trace)`
+- 场景化仓库资产：
+  - `examples/basic`
+  - `examples/service`
+  - `examples/pgvector`
+  - `cmd/generate-sdk-positioning-baseline`
+  - `docs/baselines/sdk-positioning.md`
+  - 已提交的 baseline 样例 JSON
+- Release gate：
+  - `scripts/verify.sh`
+  - `.github/workflows/ci.yml`
 
 ### Changed
 - 默认 `search_web` 工具除了返回工具文本，还会把搜索结果转换为可追溯 citations
@@ -36,6 +46,8 @@
 - README 补充知识生命周期 API、联网搜索 citation 语义和迁移说明
 - README 补充 HTML / 图片导入和图片 bridge 配置说明
 - README 补充 eval baseline 文件化和 trace summary 用法
+- README 顶部重写为 SDK 定位、场景导航和 API 稳定性分层
+- VERSIONING 补充稳定性分层与 baseline 生成约定
 
 ## [v0.6.0] - 2026-04-21
 

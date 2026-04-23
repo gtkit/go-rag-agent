@@ -1,0 +1,15 @@
+{
+  "SessionID": "baseline",
+  "Query": "summarize the positioning baseline",
+  "Stream": false,
+  "Success": true,
+  "Duration": 0,
+  "RetrievalHitCount": 1,
+  "ToolCallCount": 1,
+  "ProviderCallCount": 2,
+  "CitationCount": 1,
+  "FallbackCount": 0,
+  "PromptCacheHit": false,
+  "TotalEstimatedCostUSD": 0,
+  "Err": ""
+}

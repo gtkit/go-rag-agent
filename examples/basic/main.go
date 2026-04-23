@@ -63,7 +63,7 @@ func main() {
 		log.Fatalf("ask: %v", err)
 	}
 
-	fmt.Println("Answer:")
+	fmt.Println("Scenario: basic embedded setup")
 	fmt.Println(answer.Text)
 	fmt.Printf("Citations: %d\n", len(answer.Citations))
 }

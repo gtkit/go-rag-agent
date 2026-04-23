@@ -1,0 +1,38 @@
+{
+  "summary": {
+    "TotalCases": 1,
+    "PassedCases": 1,
+    "RetrievalRecall": 1,
+    "CitationPrecision": 1,
+    "Groundedness": 1,
+    "AnswerMatchRate": 1
+  },
+  "results": [
+    {
+      "name": "positioning-baseline",
+      "answer": {
+        "text": "ok",
+        "citations": [
+          {
+            "SourcePath": "testdata/baseline/overview.md",
+            "Title": "overview",
+            "ChunkID": "testdata/baseline/overview.md:0",
+            "StartRune": 0,
+            "EndRune": 236
+          }
+        ]
+      },
+      "retrieval_recall": 1,
+      "citation_precision": 1,
+      "groundedness": 1,
+      "answer_match": true,
+      "passed": true
+    }
+  ],
+  "structured_summary": {
+    "TotalCases": 0,
+    "PassedCases": 0,
+    "StructuredOutputValidRate": 0
+  },
+  "structured_results": []
+}

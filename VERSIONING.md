@@ -32,6 +32,20 @@
 - README / CHANGELOG / 示例已完整
 - 主要检索、导入、观测、降级路径都经过稳定验证
 
+## API 稳定性分层
+
+当前仓库把对外承诺分成 3 层：
+
+- `Stable Core`
+  说明：README 快速开始和 `examples/basic` / `examples/service` / `examples/pgvector` 覆盖的核心接入面，包括 `Config` 基础字段、`New`、`AddKnowledge`、`GetSession`、`Ask` / `AskWithOptions` / `AskStream`、`Answer.Citations`、`RunEvalSuite`、`WriteEvalReportJSON` / `ReadEvalReportJSON`、`NewPGVectorStore`。
+  规则：这一层出现不兼容变化时，必须同步更新 `CHANGELOG.md` 和迁移说明；如果变化频率仍然偏高，就不应该进入 `v1.0.0`。
+- `Advanced Integration`
+  说明：`RuntimeComponents`、`RetrievalComponents`、`StorageComponents`、`MemoryComponents`、`ToolRegistry`、`AccessBoundary`、`ProviderGovernance` 等高级接线面。
+  规则：允许在 `v0.x` 继续补字段和文档，但不应无提示删除已文档化能力。
+- `Experimental Assets`
+  说明：`PDFOCRBridge`、`ImageTextBridge`、trace summary 基线资产、仓库内 `cmd/` 辅助工具，以及演示性文档流程。
+  规则：优先快速演进；如果输出结构或用法变化，至少在 README 或 CHANGELOG 中说明。
+
 ## Tag 规则
 
 从现在开始，推荐优先使用语义化 tag：
@@ -61,6 +75,12 @@ go run github.com/golangci/golangci-lint/cmd/golangci-lint@latest run ./...
 
 ```bash
 go test -bench=. -run '^$' ./internal/retrieval ./internal/storage
+```
+
+如果本次涉及定位资产或评测基线，还建议执行：
+
+```bash
+go run ./cmd/generate-sdk-positioning-baseline
 ```
 
 ## CHANGELOG 规则

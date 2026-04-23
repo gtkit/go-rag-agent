@@ -1,12 +1,36 @@
 # go-rag-agent
 
-`go-rag-agent` 是一个基于 Go 1.26.2 的本地优先 RAG 运行时，提供：
-- 本地知识导入
-- chromem 向量检索
-- 会话记忆
-- OpenAI-compatible 聊天 / embedding 适配
-- 可注入的 runtime 组件边界
-- 单次执行结构化 trace
+`go-rag-agent` 是一个面向 Go 服务的可嵌入 RAG / Agent runtime SDK。
+
+它的目标不是提供一套独立平台，而是把本地知识导入、检索增强问答、引用追踪、会话记忆、trace / eval，以及可注入的 runtime / retrieval / storage / memory / tool 边界收敛成一个可以直接嵌入已有 Go 应用的根包 API。
+
+## 项目定位
+
+- `是什么`：库优先的 Go SDK / embeddable runtime
+- `是什么`：适合嵌入已有 API 服务、后台任务或内部工具
+- `是什么`：支持本地知识导入、会话级记忆、可追溯 citations、trace / eval 和 pgvector 等替换式接线
+- `不是什么`：不是开箱即用的 SaaS 控制台
+- `不是什么`：不是完整多租户知识平台或独立 control plane
+- `不是什么`：不是完整通用 ReAct / orchestration framework
+
+## 适用场景
+
+- `最小嵌入式接入`：先在单机或单服务内把知识导入、问答和 citations 跑通
+- `嵌入现有服务`：把 agent 当成 service 依赖注入，按 tenant / source prefix / memory scope 接入现有业务
+- `PostgreSQL / pgvector 生产部署`：保留根包 API，不改业务接线，只把向量存储切到 PostgreSQL / pgvector
+
+## 示例与基线导航
+
+- 最小接入：[`examples/basic/main.go`](examples/basic/main.go)
+- 服务内嵌：[`examples/service/main.go`](examples/service/main.go)
+- pgvector 部署：[`examples/pgvector/main.go`](examples/pgvector/main.go)
+- benchmark / eval 基线：[`docs/baselines/sdk-positioning.md`](docs/baselines/sdk-positioning.md)
+
+## API 稳定性分层
+
+- `Stable Core`：`Config` 的基础 provider / retrieval 参数、`New`、`AddKnowledge`、`GetSession`、`Ask` / `AskWithOptions` / `AskStream`、`Answer.Citations`、`RunEvalSuite`、`WriteEvalReportJSON` / `ReadEvalReportJSON`、`NewPGVectorStore` 组成当前主要接入面。除非有显式 migration note，否则不在 `v0.x` 中做静默破坏。
+- `Advanced Integration`：`RuntimeComponents`、`RetrievalComponents`、`StorageComponents`、`MemoryComponents`、`ToolRegistry`、`AccessBoundary`、`ProviderGovernance` 属于高级接线层，支持生产使用，但在 `v0.x` 期间仍可能继续补字段和文档。
+- `Experimental Assets`：`PDFOCRBridge`、`ImageTextBridge`、`SummarizeExecutionTrace` 的仓库基线用法，以及 `cmd/` 下的辅助生成命令属于实验性资产，优先服务接入和回归，不承诺与 Stable Core 相同的稳定节奏。
 
 ## 安装
 
@@ -42,13 +66,13 @@ func main() {
 	ctx := context.Background()
 
 	cfg := ragagent.Config{
-		ChatModel:      "gpt-4o-mini",
-		ChatBaseURL:    "https://api.openai.example/v1",
-		ChatAPIKey:     "replace-with-your-chat-key",
-		EmbeddingModel: "text-embedding-3-small",
-		EmbeddingAPIKey:"replace-with-your-embedding-key",
-		DataDir:        ".rag-data",
-		RequestTimeout: 20 * time.Second,
+		ChatModel:       "gpt-4o-mini",
+		ChatBaseURL:     "https://api.openai.example/v1",
+		ChatAPIKey:      "replace-with-your-chat-key",
+		EmbeddingModel:  "text-embedding-3-small",
+		EmbeddingAPIKey: "replace-with-your-embedding-key",
+		DataDir:         ".rag-data",
+		RequestTimeout:  20 * time.Second,
 	}
 
 	agent, err := ragagent.New(cfg)
@@ -1287,6 +1311,11 @@ if err := ragagent.CompareEvalReportWithBaseline(report, baseline); err != nil {
 	log.Fatalf("baseline compare failed: %v", err)
 }
 ```
+
+仓库内也维护了一份可提交、可复现的 SDK 定位基线资产：
+
+- 说明文档：[`docs/baselines/sdk-positioning.md`](docs/baselines/sdk-positioning.md)
+- 默认生成命令：`go run ./cmd/generate-sdk-positioning-baseline`
 
 执行方式：
 
