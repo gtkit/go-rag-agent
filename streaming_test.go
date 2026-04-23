@@ -15,6 +15,8 @@ import (
 	"github.com/gtkit/go-rag-agent/internal/graph"
 	"github.com/gtkit/go-rag-agent/internal/storage"
 	"github.com/gtkit/go-rag-agent/internal/telemetry"
+	"github.com/gtkit/go-rag-agent/internal/tools"
+	"github.com/gtkit/go-rag-agent/internal/websearch"
 )
 
 type fakeStreamingRunner struct {
@@ -708,6 +710,56 @@ func TestAskStreamFallsBackToWebSearchPathWhenLocalEvidenceInsufficient(t *testi
 	}
 	if got := strings.Join(chunks, ""); got != "web answer" {
 		t.Fatalf("AskStream() chunks = %q, want %q", got, "web answer")
+	}
+}
+
+func TestAskStreamFallbackWebSearchEmitsCitations(t *testing.T) {
+	t.Parallel()
+
+	runner, err := graph.NewChatRunner(
+		&fakeTraceChatModel{answer: "web-backed answer"},
+		tools.NewWebSearchTool(&fakeSearcher{
+			results: []websearch.Result{
+				{
+					Title:   "fresh result",
+					URL:     "https://example.com/fresh",
+					Content: "latest web evidence",
+				},
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewChatRunner() error = %v", err)
+	}
+
+	a := &Agent{
+		cfg: Config{
+			TopK:                5,
+			SimilarityThreshold: 0.5,
+			MaxHistoryRounds:    8,
+			EnableWebSearch:     true,
+		},
+		store:    &fakeStore{searchHits: nil},
+		embedder: &fakeEmbedder{defaultVec: []float32{1, 0}},
+		runner:   runner,
+		sessions: make(map[string]*Session),
+	}
+
+	var gotCitations []Citation
+	err = a.GetSession("web-search-stream-citations").AskStream(context.Background(), "latest news", func(event StreamEvent) error {
+		if event.Type == EventCitation && event.Citation != nil {
+			gotCitations = append(gotCitations, *event.Citation)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("AskStream() error = %v", err)
+	}
+	if len(gotCitations) != 1 {
+		t.Fatalf("AskStream() citations len = %d, want 1", len(gotCitations))
+	}
+	if gotCitations[0].SourcePath != "https://example.com/fresh" {
+		t.Fatalf("AskStream() citation source path = %q, want %q", gotCitations[0].SourcePath, "https://example.com/fresh")
 	}
 }
 

@@ -344,6 +344,7 @@ func knowledgeDirectoryRoot(src KnowledgeSource) (string, bool) {
 func (a *Agent) documentLoadOptions() DocumentLoadOptions {
 	return DocumentLoadOptions{
 		PDFOCR:             a.cfg.PDFOCRBridge.extractor(),
+		ImageText:          a.cfg.ImageTextBridge.extractor(),
 		MinDirectTextRunes: a.cfg.PDFOCRBridge.MinDirectTextRunes,
 	}
 }

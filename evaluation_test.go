@@ -2,6 +2,8 @@ package ragagent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -199,5 +201,51 @@ func TestCheckEvalThresholdsAndBaseline(t *testing.T) {
 
 	if err := CompareEvalReportWithBaseline(report, report); err != nil {
 		t.Fatalf("CompareEvalReportWithBaseline() error = %v", err)
+	}
+}
+
+func TestEvalReportJSONFileRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	report := EvalReport{
+		Summary: EvalSummary{
+			TotalCases:        1,
+			PassedCases:       1,
+			RetrievalRecall:   1,
+			CitationPrecision: 1,
+			Groundedness:      1,
+			AnswerMatchRate:   1,
+		},
+		Results: []EvalResult{
+			{
+				Name: "basic",
+				Answer: Answer{
+					Text: "ok",
+					Citations: []Citation{
+						{SourcePath: "/tmp/doc.md", Title: "doc", ChunkID: "doc:0"},
+					},
+				},
+				Passed: true,
+			},
+		},
+	}
+
+	path := filepath.Join(t.TempDir(), "report.json")
+	if err := WriteEvalReportJSON(path, report); err != nil {
+		t.Fatalf("WriteEvalReportJSON() error = %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("Stat(%q) error = %v", path, err)
+	}
+
+	got, err := ReadEvalReportJSON(path)
+	if err != nil {
+		t.Fatalf("ReadEvalReportJSON() error = %v", err)
+	}
+	if got.Summary.TotalCases != report.Summary.TotalCases {
+		t.Fatalf("ReadEvalReportJSON() total cases = %d, want %d", got.Summary.TotalCases, report.Summary.TotalCases)
+	}
+	if len(got.Results) != 1 || got.Results[0].Name != "basic" {
+		t.Fatalf("ReadEvalReportJSON() results = %+v, want basic result", got.Results)
 	}
 }

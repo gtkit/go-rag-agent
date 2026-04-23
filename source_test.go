@@ -60,6 +60,32 @@ func TestFileAndDirSourceResolve(t *testing.T) {
 			},
 		},
 		{
+			name: "FileSource on a .html file returns 1 file",
+			prepare: func(t *testing.T) (KnowledgeSource, string) {
+				t.Helper()
+				root := t.TempDir()
+				path := filepath.Join(root, "page.html")
+				writeTestFile(t, path, "<html><body>hello</body></html>")
+				return FileSource(path), root
+			},
+			wantFiles: []KnowledgeFile{
+				{Path: "page.html", Title: "page"},
+			},
+		},
+		{
+			name: "FileSource on a .png file returns 1 file",
+			prepare: func(t *testing.T) (KnowledgeSource, string) {
+				t.Helper()
+				root := t.TempDir()
+				path := filepath.Join(root, "scan.png")
+				writeTestFile(t, path, "png-bytes-placeholder")
+				return FileSource(path), root
+			},
+			wantFiles: []KnowledgeFile{
+				{Path: "scan.png", Title: "scan"},
+			},
+		},
+		{
 			name: "FileSource loads sidecar metadata",
 			prepare: func(t *testing.T) (KnowledgeSource, string) {
 				t.Helper()
@@ -77,19 +103,23 @@ func TestFileAndDirSourceResolve(t *testing.T) {
 			},
 		},
 		{
-			name: "DirSource recursively picks up .txt .md and .pdf files and returns deterministic order",
+			name: "DirSource recursively picks up .txt .md .pdf .html and image files and returns deterministic order",
 			prepare: func(t *testing.T) (KnowledgeSource, string) {
 				t.Helper()
 				root := t.TempDir()
 				writeTestFile(t, filepath.Join(root, "z.md"), "z")
 				writeTestFile(t, filepath.Join(root, "nested", "b.pdf"), "pdf")
 				writeTestFile(t, filepath.Join(root, "nested", "a.txt"), "a")
+				writeTestFile(t, filepath.Join(root, "nested", "c.html"), "<html>c</html>")
+				writeTestFile(t, filepath.Join(root, "nested", "d.png"), "png")
 				writeTestFile(t, filepath.Join(root, "skip.log"), "c")
 				return DirSource(root), root
 			},
 			wantFiles: []KnowledgeFile{
 				{Path: filepath.Join("nested", "a.txt"), Title: "a"},
 				{Path: filepath.Join("nested", "b.pdf"), Title: "b"},
+				{Path: filepath.Join("nested", "c.html"), Title: "c"},
+				{Path: filepath.Join("nested", "d.png"), Title: "d"},
 				{Path: "z.md", Title: "z"},
 			},
 		},

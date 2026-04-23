@@ -99,6 +99,7 @@ const (
 )
 
 // Citation 描述支撑答案的一段来源信息。
+// SourcePath 对本地知识表示 source path，对联网搜索结果表示 canonical URL。
 type Citation struct {
 	SourcePath string
 	Title      string

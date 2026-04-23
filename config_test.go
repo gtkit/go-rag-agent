@@ -231,6 +231,35 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: nil,
 		},
 		{
+			name: "image text bridge requires command when configured",
+			mutate: func(cfg *Config) {
+				cfg.ImageTextBridge = ImageTextBridgeConfig{
+					Args: []string{"{input}", "{output}"},
+				}
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "image text bridge requires input and output placeholders",
+			mutate: func(cfg *Config) {
+				cfg.ImageTextBridge = ImageTextBridgeConfig{
+					Command: "image-tool",
+					Args:    []string{"{input}"},
+				}
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "image text bridge accepts complete configuration",
+			mutate: func(cfg *Config) {
+				cfg.ImageTextBridge = ImageTextBridgeConfig{
+					Command: "image-tool",
+					Args:    []string{"{input}", "{output}"},
+				}
+			},
+			wantErr: nil,
+		},
+		{
 			name: "web search requires api key when enabled",
 			mutate: func(cfg *Config) {
 				cfg.EnableWebSearch = true

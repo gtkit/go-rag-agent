@@ -690,6 +690,37 @@ func TestAgentMaintainReturnsPromptCacheError(t *testing.T) {
 	}
 }
 
+func TestSummarizeExecutionTrace(t *testing.T) {
+	t.Parallel()
+
+	summary := SummarizeExecutionTrace(ExecutionTrace{
+		SessionID:             "s1",
+		Query:                 "latest news",
+		Stream:                true,
+		Success:               true,
+		Duration:              2 * time.Second,
+		ToolCalls:             []ToolTrace{{Name: "search_web"}},
+		ProviderCalls:         []ProviderCallTrace{{Provider: "openai"}},
+		TotalEstimatedCostUSD: 0.12,
+		PromptCacheHit:        true,
+		Fallbacks:             []FallbackEvent{{Stage: FallbackStageHybrid, FallbackTo: FallbackTargetVectorOnly}},
+		Citations:             []Citation{{SourcePath: "https://example.com/fresh"}},
+	})
+
+	if summary.SessionID != "s1" {
+		t.Fatalf("summary.SessionID = %q, want %q", summary.SessionID, "s1")
+	}
+	if !summary.Stream || !summary.Success {
+		t.Fatalf("summary = %+v, want stream+success", summary)
+	}
+	if summary.ToolCallCount != 1 || summary.ProviderCallCount != 1 {
+		t.Fatalf("summary = %+v, want 1 tool and 1 provider call", summary)
+	}
+	if summary.CitationCount != 1 || summary.FallbackCount != 1 {
+		t.Fatalf("summary = %+v, want 1 citation and 1 fallback", summary)
+	}
+}
+
 func (f *fakeRunner) Ask(_ context.Context, req graph.Request) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1777,6 +1808,56 @@ func TestAskExecutionTraceCapturesWebSearchTool(t *testing.T) {
 	}
 	if !slices.Contains(toolNames, "search_web") {
 		t.Fatalf("trace tool names = %v, want contains %q", toolNames, "search_web")
+	}
+	if len(answer.Trace.Citations) != 1 {
+		t.Fatalf("trace citations len = %d, want 1", len(answer.Trace.Citations))
+	}
+	if answer.Trace.Citations[0].SourcePath != "https://example.com/fresh" {
+		t.Fatalf("trace citation source path = %q, want %q", answer.Trace.Citations[0].SourcePath, "https://example.com/fresh")
+	}
+}
+
+func TestAskFallbackWebSearchAddsCitations(t *testing.T) {
+	t.Parallel()
+
+	runner, err := graph.NewChatRunner(
+		&fakeTraceChatModel{answer: "web-backed answer"},
+		tools.NewWebSearchTool(&fakeSearcher{
+			results: []websearch.Result{
+				{
+					Title:   "fresh result",
+					URL:     "https://example.com/fresh",
+					Content: "latest web evidence",
+				},
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewChatRunner() error = %v", err)
+	}
+
+	a := &Agent{
+		cfg: Config{
+			TopK:                5,
+			SimilarityThreshold: 0.5,
+			MaxHistoryRounds:    8,
+			EnableWebSearch:     true,
+		},
+		store:    &fakeStore{searchHits: nil},
+		embedder: &fakeEmbedder{defaultVec: []float32{1, 0}},
+		runner:   runner,
+		sessions: make(map[string]*Session),
+	}
+
+	answer, err := a.GetSession("web-citations").Ask(context.Background(), "latest news")
+	if err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+	if len(answer.Citations) != 1 {
+		t.Fatalf("Ask() citations len = %d, want 1", len(answer.Citations))
+	}
+	if answer.Citations[0].SourcePath != "https://example.com/fresh" {
+		t.Fatalf("Ask() citation source path = %q, want %q", answer.Citations[0].SourcePath, "https://example.com/fresh")
 	}
 }
 

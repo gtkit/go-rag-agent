@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	ragagent "github.com/gtkit/go-rag-agent"
@@ -203,4 +205,27 @@ func ExamplePGVectorStoreConfig_pgorm() {
 	fmt.Println(cfg.TableName)
 
 	// Output: knowledge_chunks
+}
+
+func ExampleWriteEvalReportJSON() {
+	path := filepath.Join(os.TempDir(), "ragagent-eval-report.json")
+	report := ragagent.EvalReport{
+		Summary: ragagent.EvalSummary{
+			TotalCases:  1,
+			PassedCases: 1,
+		},
+	}
+
+	if err := ragagent.WriteEvalReportJSON(path, report); err != nil {
+		panic(err)
+	}
+	loaded, err := ragagent.ReadEvalReportJSON(path)
+	if err != nil {
+		panic(err)
+	}
+	_ = os.Remove(path)
+
+	fmt.Println(loaded.Summary.PassedCases)
+
+	// Output: 1
 }

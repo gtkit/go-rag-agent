@@ -78,6 +78,28 @@ func (s *directorySyncState) Sync(root string, currentPaths []string, apply func
 	return nil
 }
 
+// Remove 删除某个目录根关联的已知路径，并在成功后忘记该根的同步状态。
+func (s *directorySyncState) Remove(root string, currentPaths []string, apply func(sourcePaths []string) error) error {
+	root = filepath.Clean(root)
+	currentPaths = normalizeDirectorySyncPaths(currentPaths)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sourcePaths := unionDirectorySyncPaths(s.roots[root], currentPaths)
+	if err := apply(sourcePaths); err != nil {
+		return err
+	}
+
+	nextRoots := maps.Clone(s.roots)
+	delete(nextRoots, root)
+	if err := s.persist(nextRoots); err != nil {
+		return err
+	}
+	s.roots = nextRoots
+	return nil
+}
+
 func (s *directorySyncState) persist(roots map[string][]string) error {
 	if s.manifestPath == "" {
 		return nil
@@ -141,4 +163,8 @@ func diffDirectorySyncPaths(previousPaths []string, currentPaths []string) []str
 		return nil
 	}
 	return stalePaths
+}
+
+func unionDirectorySyncPaths(pathsA []string, pathsB []string) []string {
+	return normalizeDirectorySyncPaths(append(slices.Clone(pathsA), pathsB...))
 }

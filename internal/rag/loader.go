@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	pdf "github.com/ledongthuc/pdf"
+	"golang.org/x/net/html"
 )
 
 // Document 是 RAG 层自包含的源文档模型。
@@ -25,6 +27,7 @@ type Document struct {
 // LoadOptions 定义文件加载时的可选能力。
 type LoadOptions struct {
 	PDFOCR             func(context.Context, string) (string, error)
+	ImageText          func(context.Context, string) (string, error)
 	MinDirectTextRunes int
 }
 
@@ -56,6 +59,12 @@ func readDocumentContent(ctx context.Context, path string, opts LoadOptions) ([]
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".pdf":
 		content, err := readPDFDocumentContent(ctx, path, opts)
+		return content, map[string]string{}, err
+	case ".html", ".htm":
+		content, err := readHTMLDocumentContent(path)
+		return content, map[string]string{}, err
+	case ".png", ".jpg", ".jpeg", ".webp":
+		content, err := readImageDocumentContent(ctx, path, opts)
 		return content, map[string]string{}, err
 	case ".md":
 		content, metadata, err := readMarkdownDocumentContent(path)
@@ -101,6 +110,34 @@ func readPDFDocumentContent(ctx context.Context, path string, opts LoadOptions) 
 	return []byte(text), nil
 }
 
+func readHTMLDocumentContent(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	root, err := html.Parse(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("parse html: %w", err)
+	}
+	text := normalizeHTMLText(extractHTMLVisibleText(root))
+	return []byte(text), nil
+}
+
+func readImageDocumentContent(ctx context.Context, path string, opts LoadOptions) ([]byte, error) {
+	if opts.ImageText == nil {
+		return nil, fmt.Errorf("image %q requires image bridge configuration", path)
+	}
+	text, err := opts.ImageText(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("extract image text: %w", err)
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, fmt.Errorf("image %q produced empty text", path)
+	}
+	return []byte(text), nil
+}
+
 func extractPDFText(path string) (string, error) {
 	file, reader, err := pdf.Open(path)
 	if err != nil {
@@ -131,6 +168,32 @@ func hasUsableDirectPDFText(text string, minDirectTextRunes int) bool {
 		return true
 	}
 	return utf8.RuneCountInString(text) >= minDirectTextRunes
+}
+
+func extractHTMLVisibleText(node *html.Node) string {
+	if node == nil {
+		return ""
+	}
+	if node.Type == html.TextNode {
+		return node.Data
+	}
+	if node.Type == html.ElementNode {
+		switch strings.ToLower(node.Data) {
+		case "script", "style", "noscript":
+			return ""
+		}
+	}
+	parts := make([]string, 0)
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		if text := extractHTMLVisibleText(child); strings.TrimSpace(text) != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func normalizeHTMLText(text string) string {
+	return strings.Join(strings.Fields(text), " ")
 }
 
 func normalizeStablePath(path string) (string, error) {

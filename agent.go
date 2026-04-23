@@ -627,7 +627,7 @@ func (o graphToolObserver) OnToolEnd(ctx context.Context, tool string, err error
 	return o.onEnd(ctx, tool, err)
 }
 
-func (a *Agent) newGraphToolObserver(s *Session, trace *executionTraceBuilder, emit func(StreamEvent) error) graph.ToolObserver {
+func (a *Agent) newGraphToolObserver(s *Session, trace *executionTraceBuilder, collector *webSearchCitationCollector, emit func(StreamEvent) error) graph.ToolObserver {
 	return graphToolObserver{
 		onStart: func(ctx context.Context, tool string) error {
 			if trace != nil {
@@ -647,6 +647,14 @@ func (a *Agent) newGraphToolObserver(s *Session, trace *executionTraceBuilder, e
 			if emit != nil && tool != retrieveToolName {
 				if streamErr := emit(StreamEvent{Type: EventToolEnd, ToolName: tool, Err: err}); streamErr != nil {
 					return streamErr
+				}
+				if tool == "search_web" && collector != nil {
+					for _, citation := range collector.DrainNewCitations() {
+						citation := citation
+						if streamErr := emit(StreamEvent{Type: EventCitation, Citation: &citation}); streamErr != nil {
+							return streamErr
+						}
+					}
 				}
 			}
 			return a.runTelemetryCallback(s, func() { a.dispatcher.OnToolEnd(ctx, tool, err) })
@@ -869,6 +877,8 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 	if err != nil {
 		return Answer{}, err
 	}
+	webCollector := &webSearchCitationCollector{}
+	ctx = withWebSearchCitationCollector(ctx, webCollector)
 
 	modelStartedAt := time.Now()
 	modelName := a.cfg.chatModelName()
@@ -889,7 +899,7 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 		PromptCache:               rootToGraphPromptCache{inner: a.cfg.PromptCache},
 		PromptCacheObserver:       trace.setPromptCacheHit,
 		ResponseFormatInstruction: responseFormatInstruction,
-		ToolObserver:              a.newGraphToolObserver(s, trace, nil),
+		ToolObserver:              a.newGraphToolObserver(s, trace, webCollector, nil),
 		ToolCallLimiter:           budget,
 	})
 	err = normalizeExecutionBudgetError(ctx, err)
@@ -913,6 +923,7 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 	}
 
 	citations := citationsFromHits(hits)
+	citations = append(citations, webCollector.SnapshotCitations()...)
 	if trace != nil {
 		trace.setCitations(citations)
 	}
@@ -939,6 +950,8 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 	ctx = withProviderTraceObserver(ctx, func(call ProviderCallTrace) {
 		trace.addProviderCall(call)
 	})
+	webCollector := &webSearchCitationCollector{}
+	ctx = withWebSearchCitationCollector(ctx, webCollector)
 	budget := newToolCallBudget(a.cfg.MaxToolCalls)
 	emitEvent := func(event StreamEvent) error {
 		event.Timestamp = time.Now()
@@ -1005,6 +1018,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 	}
 
 	citations := citationsFromHits(hits)
+	citations = append(citations, webCollector.SnapshotCitations()...)
 	trace.setCitations(citations)
 	for i := range citations {
 		citation := citations[i]
@@ -1034,7 +1048,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 		EnablePromptHardening: a.cfg.EnablePromptHardening,
 		PromptCache:           rootToGraphPromptCache{inner: a.cfg.PromptCache},
 		PromptCacheObserver:   trace.setPromptCacheHit,
-		ToolObserver:          a.newGraphToolObserver(s, trace, emitEvent),
+		ToolObserver:          a.newGraphToolObserver(s, trace, webCollector, emitEvent),
 		ToolCallLimiter:       budget,
 	}, func(event graph.Event) error {
 		switch event.Type {

@@ -9,6 +9,7 @@ import (
 // DocumentLoadOptions 定义文档加载时的可选能力。
 type DocumentLoadOptions struct {
 	PDFOCR             func(context.Context, string) (string, error)
+	ImageText          func(context.Context, string) (string, error)
 	MinDirectTextRunes int
 }
 
@@ -27,6 +28,7 @@ func NewFileDocumentLoader() DocumentLoader {
 func (fileDocumentLoader) Load(ctx context.Context, path string, title string, metadata map[string]string, opts DocumentLoadOptions) (Document, error) {
 	doc, err := rag.LoadFile(ctx, path, title, metadata, rag.LoadOptions{
 		PDFOCR:             opts.PDFOCR,
+		ImageText:          opts.ImageText,
 		MinDirectTextRunes: opts.MinDirectTextRunes,
 	})
 	if err != nil {

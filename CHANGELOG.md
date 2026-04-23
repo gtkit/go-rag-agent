@@ -9,6 +9,34 @@
 
 ## [Unreleased]
 
+### Added
+- 知识生命周期治理 v1：
+  - `RemoveKnowledge(ctx, src)`
+  - `RebuildKnowledge(ctx, src)`
+  - 支持文件源与目录源的显式删除和重建
+- 联网搜索 fallback 的来源现在会进入：
+  - `Answer.Citations`
+  - 流式 `EventCitation`
+  - `ExecutionTrace.Citations`
+- 发布迁移文档：
+  - `docs/migrations/2026-04-22-sdk-batch1.md`
+- 导入侧增强：
+  - `.html` / `.htm` 文件导入
+  - `ImageTextBridgeConfig`
+  - `.png` / `.jpg` / `.jpeg` / `.webp` 图片通过本地 bridge 转文本导入
+- 评测与观测增强：
+  - `WriteEvalReportJSON(path, report)`
+  - `ReadEvalReportJSON(path)`
+  - `ExecutionTraceSummary`
+  - `SummarizeExecutionTrace(trace)`
+
+### Changed
+- 默认 `search_web` 工具除了返回工具文本，还会把搜索结果转换为可追溯 citations
+- `Citation.SourcePath` 现在既可表示本地 source path，也可表示远端来源 URL
+- README 补充知识生命周期 API、联网搜索 citation 语义和迁移说明
+- README 补充 HTML / 图片导入和图片 bridge 配置说明
+- README 补充 eval baseline 文件化和 trace summary 用法
+
 ## [v0.6.0] - 2026-04-21
 
 ### Added

@@ -176,6 +176,7 @@ func main() {
 - `ProviderGovernance.CircuitBreaker.HalfOpenMaxCalls`
   说明：provider 级断路器进入 half-open 后允许的最大探测调用数，默认 `1`
 - `PDFOCRBridge` 只有在你要导入扫描版 PDF 时才需要配置；如果配置了，`Args` 必须同时包含 `{input}` 和 `{output}` 占位符。
+- `ImageTextBridge` 只有在你要导入图片知识文件时才需要配置；如果配置了，`Args` 必须同时包含 `{input}` 和 `{output}` 占位符。
 
 ## 自定义 runtime 注入
 
@@ -657,8 +658,10 @@ if err != nil {
    当前支持：
    - `.txt`
    - `.md`
+   - `.html` / `.htm`
    - 文本型 `.pdf`
    - 扫描版 `.pdf`（配置 OCR bridge 后）
+   - `.png` / `.jpg` / `.jpeg` / `.webp`（配置图片 bridge 后）
 2. `AddKnowledge` 会先解析文件，再加载为 RAG 文档。
 3. 文本按 rune 窗口进行切块（`ChunkSize`、`ChunkOverlap`）。
 4. 每个 chunk 通过 embedding 适配器向量化。
@@ -675,9 +678,31 @@ if err != nil {
 - 文本型 PDF 会优先直接抽取文本。
 - 当 PDF 无法直接抽取可用文本时，如果配置了 `PDFOCRBridge`，会自动走 OCR fallback。
 - 如果扫描版 PDF 没有配置 `PDFOCRBridge`，导入会返回明确错误，不会静默导入空内容。
+- HTML 会抽取可见文本，并跳过 `script` / `style` / `noscript` 等非正文内容。
+- 图片文件会通过 `ImageTextBridge` 转成纯文本后导入；未配置 bridge 时会返回明确错误。
 - Markdown 支持 YAML front matter，导入时会自动提取为 metadata，并从正文中剥离该 front matter。
 - 所有支持的知识文件都支持 sidecar metadata，命名规则是 `<basename>.meta.json|yaml|yml`。
 - 如果同一个 Markdown 同时存在 front matter 和 sidecar metadata，sidecar 的同名字段会覆盖 front matter。
+
+知识生命周期 API：
+- `AddKnowledge(ctx, src)`
+  说明：导入或更新一个知识源
+- `RemoveKnowledge(ctx, src)`
+  说明：显式删除一个知识源已导入的内容
+- `RebuildKnowledge(ctx, src)`
+  说明：先删除该知识源已有内容，再重新导入当前内容
+
+示例：
+
+```go
+if err := agent.RemoveKnowledge(ctx, ragagent.FileSource("/tmp/old.md")); err != nil {
+	log.Fatalf("remove knowledge: %v", err)
+}
+
+if err := agent.RebuildKnowledge(ctx, ragagent.DirSource("/tmp/knowledge")); err != nil {
+	log.Fatalf("rebuild knowledge: %v", err)
+}
+```
 
 ## 扫描版 PDF / OCR
 
@@ -716,6 +741,40 @@ cfg := ragagent.Config{
 限制：
 - OCR 结果质量取决于你配置的本地 OCR 工具和语言包。
 - 当前只接收 OCR bridge 输出的纯文本，不做版面分析、表格结构恢复或富文本重建。
+
+## 图片导入 Bridge
+
+如果你的知识库里包含图片文件，可以在 `Config` 里配置 `ImageTextBridge`。
+
+设计约束是：
+- 库本身不绑定某个 OCR 或 vision SDK
+- 你提供本地 bridge 命令
+- 命令读取 `{input}` 指向的图片，并把输出文本写入 `{output}` 指向的文本文件
+
+示例：
+
+```go
+cfg := ragagent.Config{
+	ChatModel:      "gpt-4o-mini",
+	ChatBaseURL:    "https://api.openai.example/v1",
+	ChatAPIKey:     "replace-with-your-chat-key",
+	EmbeddingModel: "text-embedding-3-small",
+	EmbeddingAPIKey:"replace-with-your-embedding-key",
+	ImageTextBridge: ragagent.ImageTextBridgeConfig{
+		Command: "my-image-text",
+		Args: []string{
+			"{input}",
+			"{output}",
+		},
+	},
+}
+```
+
+当前支持的图片扩展名：
+- `.png`
+- `.jpg`
+- `.jpeg`
+- `.webp`
 
 ## 过滤检索
 
@@ -877,7 +936,8 @@ cfg := ragagent.Config{
 
 当前限制：
 - 首版只接 Tavily，不支持多 provider 自动切换
-- 远程搜索结果当前作为工具文本提供给模型，不进入 `Answer.Citations`
+- 远程搜索结果在默认 `search_web` 路径下会进入 `Answer.Citations`
+- 对这些远端 citations，`Citation.SourcePath` 表示 canonical URL
 - 本地证据充足时不会主动联网搜索
 
 ## 工具注册表
@@ -1047,6 +1107,18 @@ cfg := ragagent.Config{
 }
 ```
 
+如果你希望输出更稳定的聚合字段，而不是自己解析完整 trace，可以使用：
+
+```go
+summary := ragagent.SummarizeExecutionTrace(*answer.Trace)
+log.Printf("trace summary session=%s success=%v tools=%d citations=%d",
+	summary.SessionID,
+	summary.Success,
+	summary.ToolCallCount,
+	summary.CitationCount,
+)
+```
+
 如果你希望输出日志摘要，可以配置 `Config.Logger`。库不会自己初始化日志实例；未提供 logger 时保持 no-op。
 
 ## Provider 治理与 usage/cost 聚合
@@ -1194,6 +1266,27 @@ fmt.Println(result.Answer.Citations)
 - 同步 trace
 - 流式终态 trace
 - 联网搜索 fallback 的 tool trace
+- 联网搜索 citations
+
+你也可以把 `EvalReport` 直接落盘，作为后续基线比较输入：
+
+```go
+report := ragagent.EvalReport{
+	Summary: summary,
+	Results: results,
+}
+if err := ragagent.WriteEvalReportJSON("eval-report.json", report); err != nil {
+	log.Fatalf("write eval report: %v", err)
+}
+
+baseline, err := ragagent.ReadEvalReportJSON("eval-report.json")
+if err != nil {
+	log.Fatalf("read eval report: %v", err)
+}
+if err := ragagent.CompareEvalReportWithBaseline(report, baseline); err != nil {
+	log.Fatalf("baseline compare failed: %v", err)
+}
+```
 
 执行方式：
 

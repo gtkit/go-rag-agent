@@ -3,7 +3,11 @@ package ragagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -82,6 +86,37 @@ type EvalThresholds struct {
 	MinAnswerMatchRate           float64
 	MinStructuredOutputValidRate float64
 	MaxFailures                  int
+}
+
+type answerJSON struct {
+	Text      string     `json:"text"`
+	Citations []Citation `json:"citations,omitempty"`
+}
+
+type evalResultJSON struct {
+	Name              string     `json:"name"`
+	Answer            answerJSON `json:"answer"`
+	RetrievalRecall   float64    `json:"retrieval_recall"`
+	CitationPrecision float64    `json:"citation_precision"`
+	Groundedness      float64    `json:"groundedness"`
+	AnswerMatch       bool       `json:"answer_match"`
+	Passed            bool       `json:"passed"`
+	Err               string     `json:"err,omitempty"`
+}
+
+type structuredResultJSON struct {
+	Name                  string `json:"name"`
+	RawJSON               string `json:"raw_json"`
+	StructuredOutputValid bool   `json:"structured_output_valid"`
+	Passed                bool   `json:"passed"`
+	Err                   string `json:"err,omitempty"`
+}
+
+type evalReportJSON struct {
+	Summary           EvalSummary            `json:"summary"`
+	Results           []evalResultJSON       `json:"results"`
+	StructuredSummary StructuredEvalSummary  `json:"structured_summary"`
+	StructuredResults []structuredResultJSON `json:"structured_results"`
 }
 
 // RunEvalSuite 执行一组同步问答评测。
@@ -169,33 +204,40 @@ func SummarizeStructuredEvalResults(results []StructuredEvalResult) StructuredEv
 
 // MarshalEvalReportJSON 将评测报告编码为 JSON。
 func MarshalEvalReportJSON(report EvalReport) ([]byte, error) {
-	type answerJSON struct {
-		Text      string     `json:"text"`
-		Citations []Citation `json:"citations,omitempty"`
+	payload := newEvalReportJSON(report)
+	return json.MarshalIndent(payload, "", "  ")
+}
+
+// WriteEvalReportJSON 将评测报告写入指定 JSON 文件。
+func WriteEvalReportJSON(path string, report EvalReport) error {
+	data, err := MarshalEvalReportJSON(report)
+	if err != nil {
+		return err
 	}
-	type evalResultJSON struct {
-		Name              string     `json:"name"`
-		Answer            answerJSON `json:"answer"`
-		RetrievalRecall   float64    `json:"retrieval_recall"`
-		CitationPrecision float64    `json:"citation_precision"`
-		Groundedness      float64    `json:"groundedness"`
-		AnswerMatch       bool       `json:"answer_match"`
-		Passed            bool       `json:"passed"`
-		Err               string     `json:"err,omitempty"`
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir eval report dir: %w", err)
 	}
-	type structuredResultJSON struct {
-		Name                  string `json:"name"`
-		RawJSON               string `json:"raw_json"`
-		StructuredOutputValid bool   `json:"structured_output_valid"`
-		Passed                bool   `json:"passed"`
-		Err                   string `json:"err,omitempty"`
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("write eval report json %q: %w", path, err)
 	}
-	payload := struct {
-		Summary           EvalSummary            `json:"summary"`
-		Results           []evalResultJSON       `json:"results"`
-		StructuredSummary StructuredEvalSummary  `json:"structured_summary"`
-		StructuredResults []structuredResultJSON `json:"structured_results"`
-	}{
+	return nil
+}
+
+// ReadEvalReportJSON 读取一个评测报告 JSON 文件。
+func ReadEvalReportJSON(path string) (EvalReport, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return EvalReport{}, fmt.Errorf("read eval report json %q: %w", path, err)
+	}
+	var payload evalReportJSON
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return EvalReport{}, fmt.Errorf("unmarshal eval report json %q: %w", path, err)
+	}
+	return payload.toReport(), nil
+}
+
+func newEvalReportJSON(report EvalReport) evalReportJSON {
+	payload := evalReportJSON{
 		Summary:           report.Summary,
 		StructuredSummary: report.StructuredSummary,
 		Results:           make([]evalResultJSON, 0, len(report.Results)),
@@ -225,7 +267,48 @@ func MarshalEvalReportJSON(report EvalReport) ([]byte, error) {
 			Err:                   errString(result.Err),
 		})
 	}
-	return json.MarshalIndent(payload, "", "  ")
+	return payload
+}
+
+func (payload evalReportJSON) toReport() EvalReport {
+	report := EvalReport{
+		Summary:           payload.Summary,
+		StructuredSummary: payload.StructuredSummary,
+		Results:           make([]EvalResult, 0, len(payload.Results)),
+		StructuredResults: make([]StructuredEvalResult, 0, len(payload.StructuredResults)),
+	}
+	for _, result := range payload.Results {
+		report.Results = append(report.Results, EvalResult{
+			Name: result.Name,
+			Answer: Answer{
+				Text:      result.Answer.Text,
+				Citations: slices.Clone(result.Answer.Citations),
+			},
+			RetrievalRecall:   result.RetrievalRecall,
+			CitationPrecision: result.CitationPrecision,
+			Groundedness:      result.Groundedness,
+			AnswerMatch:       result.AnswerMatch,
+			Passed:            result.Passed,
+			Err:               stringToError(result.Err),
+		})
+	}
+	for _, result := range payload.StructuredResults {
+		report.StructuredResults = append(report.StructuredResults, StructuredEvalResult{
+			Name:                  result.Name,
+			Answer:                StructuredAnswer{RawJSON: result.RawJSON},
+			StructuredOutputValid: result.StructuredOutputValid,
+			Passed:                result.Passed,
+			Err:                   stringToError(result.Err),
+		})
+	}
+	return report
+}
+
+func stringToError(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return errors.New(value)
 }
 
 // CheckEvalThresholds 校验评测摘要是否满足阈值。

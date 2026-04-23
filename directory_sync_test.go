@@ -150,6 +150,112 @@ func TestAddKnowledgeDirSourcePersistsDeletionSyncAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestRemoveKnowledgeFileSourceDeletesIndexedChunks(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	baseDir := t.TempDir()
+	dataDir := filepath.Join(baseDir, "data")
+	filePath := filepath.Join(baseDir, "knowledge.md")
+	writeTestFile(t, filePath, "alpha")
+
+	agent := newDirectorySyncTestAgent(t, dataDir)
+	if err := agent.AddKnowledge(ctx, FileSource(filePath)); err != nil {
+		t.Fatalf("AddKnowledge() error = %v", err)
+	}
+	if err := agent.RemoveKnowledge(ctx, FileSource(filePath)); err != nil {
+		t.Fatalf("RemoveKnowledge() error = %v", err)
+	}
+
+	gotPaths := collectHitSourcePaths(t, agent.store, []float32{1, 0})
+	if len(gotPaths) != 0 {
+		t.Fatalf("Search() returned stale paths after RemoveKnowledge: %v", gotPaths)
+	}
+}
+
+func TestRemoveKnowledgeDirSourceDeletesTrackedPaths(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	baseDir := t.TempDir()
+	dataDir := filepath.Join(baseDir, "data")
+	knowledgeDir := filepath.Join(baseDir, "knowledge")
+	keepPath := filepath.Join(knowledgeDir, "keep.md")
+	removePath := filepath.Join(knowledgeDir, "remove.md")
+	writeTestFile(t, keepPath, "alpha")
+	writeTestFile(t, removePath, "beta")
+
+	agent := newDirectorySyncTestAgent(t, dataDir)
+	if err := agent.AddKnowledge(ctx, DirSource(knowledgeDir)); err != nil {
+		t.Fatalf("AddKnowledge() error = %v", err)
+	}
+	if err := agent.RemoveKnowledge(ctx, DirSource(knowledgeDir)); err != nil {
+		t.Fatalf("RemoveKnowledge() error = %v", err)
+	}
+
+	gotPaths := collectHitSourcePaths(t, agent.store, []float32{1, 0})
+	if len(gotPaths) != 0 {
+		t.Fatalf("Search() returned stale paths after RemoveKnowledge dir source: %v", gotPaths)
+	}
+}
+
+func TestRebuildKnowledgeFileSourceReimportsCurrentContent(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	baseDir := t.TempDir()
+	dataDir := filepath.Join(baseDir, "data")
+	filePath := filepath.Join(baseDir, "knowledge.md")
+	writeTestFile(t, filePath, "alpha")
+
+	agent := newDirectorySyncTestAgent(t, dataDir)
+	if err := agent.AddKnowledge(ctx, FileSource(filePath)); err != nil {
+		t.Fatalf("AddKnowledge() error = %v", err)
+	}
+	writeTestFile(t, filePath, "beta")
+	if err := agent.RebuildKnowledge(ctx, FileSource(filePath)); err != nil {
+		t.Fatalf("RebuildKnowledge() error = %v", err)
+	}
+
+	oldTexts := collectHitTexts(t, agent.store, []float32{1, 0})
+	if slices.Contains(oldTexts, "alpha") {
+		t.Fatalf("Search() returned stale alpha content after rebuild: %v", oldTexts)
+	}
+	newTexts := collectHitTexts(t, agent.store, []float32{0, 1})
+	if !slices.Contains(newTexts, "beta") {
+		t.Fatalf("Search() missing rebuilt beta content, got %v", newTexts)
+	}
+}
+
+func TestRebuildKnowledgeDirSourceReimportsCurrentDirectory(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	baseDir := t.TempDir()
+	dataDir := filepath.Join(baseDir, "data")
+	knowledgeDir := filepath.Join(baseDir, "knowledge")
+	filePath := filepath.Join(knowledgeDir, "doc.md")
+	writeTestFile(t, filePath, "alpha")
+
+	agent := newDirectorySyncTestAgent(t, dataDir)
+	if err := agent.AddKnowledge(ctx, DirSource(knowledgeDir)); err != nil {
+		t.Fatalf("AddKnowledge() error = %v", err)
+	}
+	writeTestFile(t, filePath, "beta")
+	if err := agent.RebuildKnowledge(ctx, DirSource(knowledgeDir)); err != nil {
+		t.Fatalf("RebuildKnowledge() error = %v", err)
+	}
+
+	oldTexts := collectHitTexts(t, agent.store, []float32{1, 0})
+	if slices.Contains(oldTexts, "alpha") {
+		t.Fatalf("Search() returned stale alpha content after dir rebuild: %v", oldTexts)
+	}
+	newTexts := collectHitTexts(t, agent.store, []float32{0, 1})
+	if !slices.Contains(newTexts, "beta") {
+		t.Fatalf("Search() missing rebuilt beta content, got %v", newTexts)
+	}
+}
+
 func newDirectorySyncTestAgent(t *testing.T, dataDir string) *Agent {
 	t.Helper()
 
@@ -202,4 +308,22 @@ func collectHitSourcePaths(t *testing.T, store storage.VectorStore, queryEmbeddi
 	}
 	slices.Sort(paths)
 	return paths
+}
+
+func collectHitTexts(t *testing.T, store storage.VectorStore, queryEmbedding []float32) []string {
+	t.Helper()
+
+	hits, err := store.Search(t.Context(), queryEmbedding, 10, -1)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+
+	texts := make([]string, 0, len(hits))
+	for _, hit := range hits {
+		if !slices.Contains(texts, hit.Chunk.Text) {
+			texts = append(texts, hit.Chunk.Text)
+		}
+	}
+	slices.Sort(texts)
+	return texts
 }

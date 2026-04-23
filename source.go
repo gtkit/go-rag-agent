@@ -17,7 +17,7 @@ type fileSource struct {
 	path string
 }
 
-// FileSource 返回一个仅解析单个本地文本或 PDF 文件的知识源。
+// FileSource 返回一个仅解析单个本地文本、HTML、图片或 PDF 文件的知识源。
 func FileSource(path string) KnowledgeSource {
 	return fileSource{path: path}
 }
@@ -70,7 +70,7 @@ type youdaoNoteSource struct {
 	exportDir string
 }
 
-// DirSource 返回一个递归解析目录内受支持文本/PDF 文件的知识源。
+// DirSource 返回一个递归解析目录内受支持文本、HTML、图片或 PDF 文件的知识源。
 func DirSource(path string) KnowledgeSource {
 	return dirSource{path: path}
 }
@@ -144,7 +144,7 @@ func (s dirSource) Resolve(ctx context.Context) ([]KnowledgeFile, error) {
 
 func isSupportedKnowledgePath(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".txt", ".md", ".pdf":
+	case ".txt", ".md", ".pdf", ".html", ".htm", ".png", ".jpg", ".jpeg", ".webp":
 		return true
 	default:
 		return false

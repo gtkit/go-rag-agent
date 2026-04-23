@@ -58,6 +58,7 @@ type Config struct {
 	PromptCache                  PromptCache
 	ToolRegistry                 *ToolRegistry
 	PDFOCRBridge                 PDFOCRBridgeConfig
+	ImageTextBridge              ImageTextBridgeConfig
 	WebSearch                    WebSearchConfig
 	Logger                       Logger
 	TraceRecorder                TraceRecorder
@@ -132,6 +133,7 @@ func (c Config) normalized() Config {
 	c.EmbeddingAPIKey = strings.TrimSpace(c.EmbeddingAPIKey)
 	c.DataDir = strings.TrimSpace(c.DataDir)
 	c.PDFOCRBridge = c.PDFOCRBridge.normalized()
+	c.ImageTextBridge = c.ImageTextBridge.normalized()
 	c.WebSearch = c.WebSearch.normalized()
 	c.ProviderGovernance = c.ProviderGovernance.normalized()
 	c.AccessBoundary = c.AccessBoundary.normalized()
@@ -270,6 +272,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.PDFOCRBridge.validate(); err != nil {
+		return err
+	}
+	if err := c.ImageTextBridge.validate(); err != nil {
 		return err
 	}
 	return nil

@@ -15,6 +15,7 @@ require (
 	github.com/pkoukk/tiktoken-go v0.1.6
 	github.com/redis/go-redis/v9 v9.17.0
 	github.com/tmc/langchaingo v0.1.14
+	golang.org/x/net v0.53.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -41,6 +42,6 @@ require (
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	golang.org/x/arch v0.25.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 )

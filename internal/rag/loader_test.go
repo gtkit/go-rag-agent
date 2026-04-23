@@ -143,6 +143,28 @@ func TestLoadFile(t *testing.T) {
 			},
 		},
 		{
+			name: "html extracts visible text",
+			prepare: func(t *testing.T) (context.Context, string, string, map[string]string) {
+				t.Helper()
+				root := t.TempDir()
+				path := filepath.Join(root, "knowledge.html")
+				writeTestFile(t, path, "<html><head><title>Ignore</title><style>.x{}</style></head><body><h1>Hello</h1><script>console.log('x')</script><p>world</p></body></html>")
+				return context.Background(), path, "Knowledge HTML", map[string]string{"lang": "en"}
+			},
+			assertion: func(t *testing.T, doc Document, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("LoadFile() error = %v", err)
+				}
+				if !strings.Contains(doc.Content, "Hello") || !strings.Contains(doc.Content, "world") {
+					t.Fatalf("LoadFile() content = %q, want visible html text", doc.Content)
+				}
+				if strings.Contains(doc.Content, "console.log") {
+					t.Fatalf("LoadFile() content = %q, want script content stripped", doc.Content)
+				}
+			},
+		},
+		{
 			name: "canceled context before read",
 			prepare: func(t *testing.T) (context.Context, string, string, map[string]string) {
 				t.Helper()
@@ -251,6 +273,45 @@ func TestLoadFilePDFOCRFallback(t *testing.T) {
 				t.Helper()
 				if err == nil || !strings.Contains(err.Error(), "requires OCR") {
 					t.Fatalf("LoadFile() error = %v, want clear OCR-required error", err)
+				}
+			},
+		},
+		{
+			name: "image uses bridge output",
+			prepare: func(t *testing.T) (string, LoadOptions, string) {
+				t.Helper()
+				root := t.TempDir()
+				path := filepath.Join(root, "scan.png")
+				writeTestFile(t, path, "png-bytes")
+				return path, LoadOptions{
+					ImageText: func(context.Context, string) (string, error) {
+						return "image extracted text", nil
+					},
+				}, ""
+			},
+			assertion: func(t *testing.T, doc Document, err error, _ string) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("LoadFile() error = %v", err)
+				}
+				if !strings.Contains(doc.Content, "image extracted text") {
+					t.Fatalf("LoadFile() content = %q, want image bridge text", doc.Content)
+				}
+			},
+		},
+		{
+			name: "image without bridge returns clear error",
+			prepare: func(t *testing.T) (string, LoadOptions, string) {
+				t.Helper()
+				root := t.TempDir()
+				path := filepath.Join(root, "scan.png")
+				writeTestFile(t, path, "png-bytes")
+				return path, LoadOptions{}, ""
+			},
+			assertion: func(t *testing.T, _ Document, err error, _ string) {
+				t.Helper()
+				if err == nil || !strings.Contains(err.Error(), "requires image bridge") {
+					t.Fatalf("LoadFile() error = %v, want clear image-bridge-required error", err)
 				}
 			},
 		},
