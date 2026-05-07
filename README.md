@@ -728,6 +728,43 @@ if err := agent.RebuildKnowledge(ctx, ragagent.DirSource("/tmp/knowledge")); err
 }
 ```
 
+## 文档转换器扩展
+
+默认 `FileSource(path)` 仍然只接受内置支持的文本、HTML、PDF 和图片扩展名。对于 `.docx`、复杂 PDF 预处理、Office 文档或自定义网页清洗，可以显式使用 `ConvertibleFileSource(path)` 并在 `Config.DocumentConverters` 中注入转换器。
+
+命令型转换器示例：
+
+```go
+converter, err := ragagent.NewCommandDocumentConverter(ragagent.CommandDocumentConverterConfig{
+    Name:       "markitdown",
+    Extensions: []string{".docx", ".pptx", ".xlsx"},
+    Command:    "markitdown",
+    Args:       []string{"{input}", "--output", "{output}"},
+})
+if err != nil {
+    log.Fatalf("new converter: %v", err)
+}
+
+cfg := ragagent.Config{
+    ChatModel:          "gpt-4o-mini",
+    ChatBaseURL:        "https://api.openai.example/v1",
+    ChatAPIKey:         "replace-with-your-chat-key",
+    EmbeddingModel:     "text-embedding-3-small",
+    EmbeddingAPIKey:    "replace-with-your-embedding-key",
+    DocumentConverters: []ragagent.DocumentConverter{converter},
+}
+
+if err := agent.AddKnowledge(ctx, ragagent.ConvertibleFileSource("knowledge/handbook.docx")); err != nil {
+    log.Fatalf("add converted knowledge: %v", err)
+}
+```
+
+约束：
+- `FileSource(path)` 的严格扩展名校验不变；需要转换器时使用 `ConvertibleFileSource(path)`。
+- 命令参数必须包含 `{input}` 和 `{output}` 占位符。
+- 转换器输出必须是纯文本或 Markdown；空输出会返回错误，不会静默导入空知识。
+- `DirSource(path)` 仍然只扫描内置支持的扩展名；目录级 Office 扫描建议由调用方先生成清单后逐个使用 `ConvertibleFileSource`。
+
 ## 扫描版 PDF / OCR
 
 如果你的知识库里有扫描版 PDF、图片型 PDF，可以在 `Config` 里配置 `PDFOCRBridge`。
@@ -1002,12 +1039,75 @@ cfg := ragagent.Config{
 }
 ```
 
+MCP HTTP JSON-RPC 工具适配示例：
+
+示例中的 HTTP client 使用 `github.com/gtkit/httpc`。
+
+```go
+mcpTool, err := ragagent.NewMCPTool(httpc.New(httpc.WithTimeout(10*time.Second)), ragagent.MCPToolConfig{
+    Name:        "search_docs",
+    Description: "Search remote docs through MCP",
+    Endpoint:    "https://mcp.example/rpc",
+    Method:      "tools/call",
+    ToolName:    "search_docs",
+})
+if err != nil {
+    log.Fatalf("new mcp tool: %v", err)
+}
+
+registry := ragagent.NewToolRegistry(mcpTool)
+```
+
+当前 MCP 适配器只覆盖 HTTP JSON-RPC `tools/call` 形态；不做 stdio MCP session 管理、工具自动发现或完整 ReAct loop。
+
 工具执行语义：
 - 本地检索始终优先
 - 只有在本地证据不足时，才会进入 fallback 工具链
 - fallback 工具按注册顺序尝试
 - 如果调用方注册同名 `search_web`，会覆写默认 web 工具
 - 这轮仍然不是完整的 ReAct/tool-calling agent loop；当前工具链主要用于 evidence-empty fallback
+
+## 外部 Reranker 适配
+
+`Reranker` 仍然是检索重排的公开接口。除了默认规则重排器，你也可以注入 OpenAI-compatible HTTP rerank endpoint：
+
+示例中的 HTTP client 使用 `github.com/gtkit/httpc`。
+
+```go
+reranker, err := ragagent.NewOpenAIReranker(
+    httpc.New(httpc.WithTimeout(10*time.Second)),
+    ragagent.OpenAIRerankerConfig{
+        BaseURL: "https://rerank.example/v1/rerank",
+        APIKey:  "replace-with-your-rerank-key",
+        Model:   "rerank-model",
+    },
+)
+if err != nil {
+    log.Fatalf("new reranker: %v", err)
+}
+
+cfg := ragagent.Config{
+    EnableHybridSearch: true,
+    EnableRerank:       true,
+    Storage: ragagent.StorageComponents{
+        Reranker: reranker,
+    },
+}
+```
+
+语义：
+- 只把 hybrid shortlist 发送给外部 reranker。
+- HTTP 错误、非法 index 或无效响应会返回给现有 rerank 降级路径，主流程可退回未 rerank 的 hybrid 结果。
+- SDK 不内置具体商业平台模型常量；平台差异可通过 `Reranker` 接口自行适配。
+
+## Gateway 示例
+
+仓库提供 `examples/gateway`，演示如何在已有 `net/http` 服务里暴露最小非流式 OpenAI-compatible `/v1/chat/completions` handler，并把请求转给 `Agent.GetSession(...).Ask(...)`。
+
+边界：
+- 这是嵌入示例，不是内置控制台。
+- 不包含用户系统、后台管理、知识库 CRUD 或 SaaS control plane。
+- 流式 chat completions、鉴权、限流和租户权限应由宿主服务按自身架构实现。
 
 ## 可观测性与降级
 

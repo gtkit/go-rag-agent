@@ -261,7 +261,7 @@ func (a *Agent) AddKnowledge(ctx context.Context, src KnowledgeSource) error {
 		}
 		currentSourcePaths = append(currentSourcePaths, file.Path)
 
-		doc, err := loader.Load(ctx, file.Path, file.Title, file.Metadata, a.documentLoadOptions())
+		doc, err := loadDocumentWithConverters(ctx, a.cfg.DocumentConverters, loader, file.Path, file.Title, file.Metadata, a.documentLoadOptions())
 		if err != nil {
 			return fmt.Errorf("load knowledge file %q: %w", file.Path, err)
 		}

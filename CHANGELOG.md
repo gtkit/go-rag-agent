@@ -10,6 +10,13 @@
 ## [Unreleased]
 
 ### Added
+- SDK 扩展适配能力：
+  - `DocumentConverter`
+  - `ConvertibleFileSource(path)`
+  - `NewCommandDocumentConverter(...)`
+  - `NewOpenAIReranker(...)`
+  - `NewMCPTool(...)`
+  - `examples/gateway` 轻量 Chat Completions 嵌入示例
 - 知识生命周期治理 v1：
   - `RemoveKnowledge(ctx, src)`
   - `RebuildKnowledge(ctx, src)`

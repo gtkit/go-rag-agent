@@ -14,7 +14,8 @@ import (
 )
 
 type fileSource struct {
-	path string
+	path             string
+	allowUnsupported bool
 }
 
 // FileSource 返回一个仅解析单个本地文本、HTML、图片或 PDF 文件的知识源。
@@ -22,11 +23,16 @@ func FileSource(path string) KnowledgeSource {
 	return fileSource{path: path}
 }
 
+// ConvertibleFileSource 返回一个单文件知识源，允许通过 DocumentConverter 处理默认 loader 不支持的扩展名。
+func ConvertibleFileSource(path string) KnowledgeSource {
+	return fileSource{path: path, allowUnsupported: true}
+}
+
 func (s fileSource) Resolve(ctx context.Context) ([]KnowledgeFile, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if !isSupportedKnowledgePath(s.path) {
+	if !isSupportedKnowledgePath(s.path) && !s.allowUnsupported {
 		return nil, fmt.Errorf("unsupported file extension for %q: %w", s.path, ErrUnsupportedSource)
 	}
 	info, err := os.Lstat(s.path)

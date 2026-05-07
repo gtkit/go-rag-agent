@@ -36,6 +36,8 @@ openspec/
 openspec/*
 !openspec/changes/
 openspec/changes/*
+!openspec/changes/add-rag-extension-adapters/
+!openspec/changes/add-rag-extension-adapters/**
 !openspec/changes/refresh-sdk-positioning-assets/
 !openspec/changes/refresh-sdk-positioning-assets/**
 !openspec/changes/archive/

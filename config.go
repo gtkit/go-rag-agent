@@ -55,16 +55,18 @@ type Config struct {
 	Storage                      StorageComponents
 	Memory                       MemoryComponents
 	ProviderGovernance           ProviderGovernanceConfig
-	PromptCache                  PromptCache
-	ToolRegistry                 *ToolRegistry
-	PDFOCRBridge                 PDFOCRBridgeConfig
-	ImageTextBridge              ImageTextBridgeConfig
-	WebSearch                    WebSearchConfig
-	Logger                       Logger
-	TraceRecorder                TraceRecorder
-	Callbacks                    []Callback
-	LongTermMemoryTopK           int
-	LongTermMemoryThreshold      float64
+	// DocumentConverters are optional pre-loader converters for files unsupported by the default loader.
+	DocumentConverters      []DocumentConverter
+	PromptCache             PromptCache
+	ToolRegistry            *ToolRegistry
+	PDFOCRBridge            PDFOCRBridgeConfig
+	ImageTextBridge         ImageTextBridgeConfig
+	WebSearch               WebSearchConfig
+	Logger                  Logger
+	TraceRecorder           TraceRecorder
+	Callbacks               []Callback
+	LongTermMemoryTopK      int
+	LongTermMemoryThreshold float64
 }
 
 // withDefaults 返回一个应用了 Phase 1 默认值的配置副本。

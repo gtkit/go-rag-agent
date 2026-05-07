@@ -229,3 +229,22 @@ func ExampleWriteEvalReportJSON() {
 
 	// Output: 1
 }
+
+func ExampleNewCommandDocumentConverter() {
+	converter, err := ragagent.NewCommandDocumentConverter(ragagent.CommandDocumentConverterConfig{
+		Name:       "office-converter",
+		Extensions: []string{".docx"},
+		Command:    "office-to-markdown",
+		Args:       []string{"{input}", "{output}"},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(converter.Name())
+	fmt.Println(ragagent.ConvertibleFileSource("handbook.docx") != nil)
+
+	// Output:
+	// office-converter
+	// true
+}
