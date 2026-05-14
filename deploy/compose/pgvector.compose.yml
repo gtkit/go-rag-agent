@@ -1,0 +1,23 @@
+services:
+  pgvector:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${RAGAGENT_PGVECTOR_DB:-ragagent}
+      POSTGRES_USER: ${RAGAGENT_PGVECTOR_USER:-ragagent}
+      POSTGRES_PASSWORD: ${RAGAGENT_PGVECTOR_PASSWORD:?set RAGAGENT_PGVECTOR_PASSWORD}
+    ports:
+      - "${RAGAGENT_PGVECTOR_PORT:-5432}:5432"
+    volumes:
+      - pgvector-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  pgvector-data:

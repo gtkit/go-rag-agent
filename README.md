@@ -165,7 +165,7 @@ go run ./examples/service
 pgvector 示例额外需要 `RAGAGENT_PGVECTOR_DSN`：
 
 ```bash
-export RAGAGENT_PGVECTOR_DSN="postgres://user:pass@localhost:5432/rag?sslmode=disable"
+export RAGAGENT_PGVECTOR_DSN="$YOUR_PGVECTOR_DSN"
 go run ./examples/pgvector
 ```
 
@@ -233,6 +233,12 @@ go run ./examples/pgvector
   说明：provider 级断路器进入 half-open 后允许的最大探测调用数，默认 `1`
 - `PDFOCRBridge` 只有在你要导入扫描版 PDF 时才需要配置；如果配置了，`Args` 必须同时包含 `{input}` 和 `{output}` 占位符。
 - `ImageTextBridge` 只有在你要导入图片知识文件时才需要配置；如果配置了，`Args` 必须同时包含 `{input}` 和 `{output}` 占位符。
+
+## 生产验证与部署
+
+生产环境配置从 [`.env.production.example`](.env.production.example) 开始，PostgreSQL / pgvector 可参考 [`deploy/compose/pgvector.compose.yml`](deploy/compose/pgvector.compose.yml)，完整验证矩阵见 [`docs/production.md`](docs/production.md)。
+
+真实 provider 联调默认跳过；只有显式设置 `RAGAGENT_INTEGRATION_LIVE=1` 并通过安全渠道注入 provider 环境变量后，才运行 `TestLiveOpenAICompatibleProviders`。
 
 ## 自定义 runtime 注入
 
@@ -615,7 +621,7 @@ if err := agent.Maintain(ctx, time.Now()); err != nil {
 
 ```go
 memoryVectorStore, err := ragagent.NewPGVectorStore(ragagent.PGVectorStoreConfig{
-	ConnString: "postgres://user:pass@127.0.0.1:5432/rag?sslmode=disable",
+	ConnString: os.Getenv("RAGAGENT_PGVECTOR_DSN"),
 	TableName:  "long_term_memories",
 	Dimensions: 1536,
 })
@@ -654,7 +660,7 @@ cfg := ragagent.Config{
 
 ```go
 store, err := ragagent.NewPGVectorStore(ragagent.PGVectorStoreConfig{
-	ConnString: "postgres://user:pass@127.0.0.1:5432/rag?sslmode=disable",
+	ConnString: os.Getenv("RAGAGENT_PGVECTOR_DSN"),
 	TableName:  "knowledge_chunks",
 	Dimensions: 1536,
 })
@@ -680,7 +686,7 @@ cfg := ragagent.Config{
 
 ```go
 pgCfg := pgorm.NewConfig(
-	pgorm.WithDSN("postgres://user:pass@127.0.0.1:5432/rag?sslmode=disable"),
+	pgorm.WithDSN(os.Getenv("RAGAGENT_PGVECTOR_DSN")),
 	pgorm.WithStartupPing(false),
 )
 
@@ -698,7 +704,7 @@ if err != nil {
 
 ```go
 client, err := pgorm.Open(ctx,
-	pgorm.WithDSN("postgres://user:pass@127.0.0.1:5432/rag?sslmode=disable"),
+	pgorm.WithDSN(os.Getenv("RAGAGENT_PGVECTOR_DSN")),
 	pgorm.WithStartupPing(false),
 )
 if err != nil {
