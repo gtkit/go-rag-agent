@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,11 +16,12 @@ import (
 type stubGatewaySession struct {
 	gotQuery string
 	answer   ragagent.Answer
+	err      error
 }
 
 func (s *stubGatewaySession) Ask(_ context.Context, query string) (ragagent.Answer, error) {
 	s.gotQuery = query
-	return s.answer, nil
+	return s.answer, s.err
 }
 
 type stubGatewayAgent struct {
@@ -42,6 +44,7 @@ func TestChatCompletionsHandler(t *testing.T) {
 		wantSession string
 		wantQuery   string
 		wantContent string
+		sessionErr  error
 	}{
 		{
 			name: "routes last user message to session",
@@ -59,9 +62,38 @@ func TestChatCompletionsHandler(t *testing.T) {
 			wantContent: "gateway answer",
 		},
 		{
+			name:        "defaults empty user and model",
+			body:        `{"messages":[{"role":"user","content":"hello"}]}`,
+			wantStatus:  http.StatusOK,
+			wantSession: "default",
+			wantQuery:   "hello",
+			wantContent: "gateway answer",
+		},
+		{
+			name:       "rejects wrong method",
+			body:       `{}`,
+			wantStatus: http.StatusMethodNotAllowed,
+		},
+		{
+			name:       "rejects invalid json",
+			body:       `{`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "rejects streaming",
+			body:       `{"stream":true,"messages":[{"role":"user","content":"hello"}]}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
 			name:       "rejects empty user message",
 			body:       `{"messages":[{"role":"assistant","content":"hello"}]}`,
 			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "returns ask error",
+			body:       `{"messages":[{"role":"user","content":"hello"}]}`,
+			wantStatus: http.StatusInternalServerError,
+			sessionErr: errors.New("model failed"),
 		},
 	}
 
@@ -70,11 +102,15 @@ func TestChatCompletionsHandler(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			session := &stubGatewaySession{answer: ragagent.Answer{Text: "gateway answer"}}
+			session := &stubGatewaySession{answer: ragagent.Answer{Text: "gateway answer"}, err: tc.sessionErr}
 			agent := &stubGatewayAgent{session: session}
 			handler := NewChatCompletionsHandler(agent)
 
-			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(tc.body))
+			method := http.MethodPost
+			if tc.name == "rejects wrong method" {
+				method = http.MethodGet
+			}
+			req := httptest.NewRequest(method, "/v1/chat/completions", bytes.NewBufferString(tc.body))
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 

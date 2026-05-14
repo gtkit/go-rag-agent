@@ -332,6 +332,21 @@ func TestConfigValidate(t *testing.T) {
 			},
 			wantErr: ErrInvalidConfig,
 		},
+		{
+			name: "tool calling requires registered tool",
+			mutate: func(cfg *Config) {
+				cfg.EnableToolCalling = true
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "tool calling accepts explicit tool registry",
+			mutate: func(cfg *Config) {
+				cfg.EnableToolCalling = true
+				cfg.ToolRegistry = NewToolRegistry(registryTestTool{name: "safe_tool", description: "safe"})
+			},
+			wantErr: nil,
+		},
 	}
 
 	for _, tc := range tests {

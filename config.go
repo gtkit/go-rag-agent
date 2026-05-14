@@ -47,6 +47,7 @@ type Config struct {
 	EnableHybridSearch           bool
 	EnableRerank                 bool
 	EnableWebSearch              bool
+	EnableToolCalling            bool
 	HybridCandidateMultiplier    int
 	HybridRRFK                   float64
 	RerankShortlistMultiplier    int
@@ -257,6 +258,11 @@ func (c Config) Validate() error {
 	}
 	if c.MaxIterations <= 0 {
 		return fmt.Errorf("max iterations must be positive: %w", ErrInvalidConfig)
+	}
+	if c.EnableToolCalling {
+		if c.ToolRegistry == nil || len(c.ToolRegistry.Tools()) == 0 {
+			return fmt.Errorf("tool-calling requires at least one registered tool: %w", ErrInvalidConfig)
+		}
 	}
 	if c.EnableRerank && !c.EnableHybridSearch {
 		return fmt.Errorf("enable rerank requires hybrid search: %w", ErrInvalidConfig)

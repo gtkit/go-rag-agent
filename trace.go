@@ -33,6 +33,16 @@ type ProviderCallTrace struct {
 	Err              error
 }
 
+// MemoryTrace 描述一次 memory provider 操作摘要。
+type MemoryTrace struct {
+	Operation  string
+	StartedAt  time.Time
+	FinishedAt time.Time
+	Duration   time.Duration
+	Success    bool
+	Err        error
+}
+
 // ExecutionTrace 描述一次同步或流式问答的聚合执行信息。
 type ExecutionTrace struct {
 	SessionID             string
@@ -49,6 +59,7 @@ type ExecutionTrace struct {
 	Model                 ModelMetrics
 	ToolCalls             []ToolTrace
 	ProviderCalls         []ProviderCallTrace
+	Memory                []MemoryTrace
 	TotalEstimatedCostUSD float64
 	PromptCacheHit        bool
 	Fallbacks             []FallbackEvent
@@ -135,6 +146,21 @@ func (b *executionTraceBuilder) addProviderCall(call ProviderCallTrace) {
 	}
 	b.trace.ProviderCalls = append(b.trace.ProviderCalls, call)
 	b.trace.TotalEstimatedCostUSD += call.EstimatedCostUSD
+}
+
+func (b *executionTraceBuilder) addMemory(operation string, startedAt time.Time, err error) {
+	if b == nil {
+		return
+	}
+	finishedAt := time.Now()
+	b.trace.Memory = append(b.trace.Memory, MemoryTrace{
+		Operation:  operation,
+		StartedAt:  startedAt,
+		FinishedAt: finishedAt,
+		Duration:   finishedAt.Sub(startedAt),
+		Success:    err == nil,
+		Err:        err,
+	})
 }
 
 func (b *executionTraceBuilder) setPromptCacheHit(hit bool) {

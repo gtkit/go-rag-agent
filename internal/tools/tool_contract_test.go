@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -153,6 +154,103 @@ func TestWebSearchToolContract(t *testing.T) {
 				if !strings.Contains(got, want) {
 					t.Fatalf("Run() = %q, want contains %q", got, want)
 				}
+			}
+		})
+	}
+}
+
+type collectingWebResults struct {
+	results []websearch.Result
+}
+
+func (c *collectingWebResults) CollectWebSearchResults(results []websearch.Result) {
+	c.results = append([]websearch.Result(nil), results...)
+}
+
+func TestToolDescriptionsAndWebCollector(t *testing.T) {
+	t.Parallel()
+
+	retrieval := NewRetrievalTool(fakeRetriever{})
+	if retrieval.Description() == "" {
+		t.Fatal("RetrievalTool.Description() = empty")
+	}
+	search := NewWebSearchTool(fakeWebSearcher{})
+	if search.Description() == "" {
+		t.Fatal("WebSearchTool.Description() = empty")
+	}
+
+	collector := &collectingWebResults{}
+	ctx := WithWebSearchResultCollector(context.Background(), collector)
+	results := []websearch.Result{{Title: "Example", URL: "https://example.com", Content: "snippet"}}
+	_, err := NewWebSearchTool(fakeWebSearcher{results: results}).Run(ctx, "query")
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(collector.results) != 1 || collector.results[0].URL != "https://example.com" {
+		t.Fatalf("collector results = %#v, want example result", collector.results)
+	}
+	if got := WithWebSearchResultCollector(context.Background(), nil); got == nil {
+		t.Fatal("WithWebSearchResultCollector(nil) returned nil context")
+	}
+}
+
+func TestToolRunErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		run     func() error
+		wantSub string
+	}{
+		{
+			name: "retrieval requires retriever",
+			run: func() error {
+				_, err := NewRetrievalTool(nil).Run(context.Background(), "query")
+				return err
+			},
+			wantSub: "retriever is required",
+		},
+		{
+			name: "retrieval wraps search error",
+			run: func() error {
+				_, err := NewRetrievalTool(fakeRetriever{err: errors.New("down")}).Run(context.Background(), "query")
+				return err
+			},
+			wantSub: "search retrieval hits",
+		},
+		{
+			name: "web search requires searcher",
+			run: func() error {
+				_, err := NewWebSearchTool(nil).Run(context.Background(), "query")
+				return err
+			},
+			wantSub: "web searcher is required",
+		},
+		{
+			name: "web search rejects blank query",
+			run: func() error {
+				_, err := NewWebSearchTool(fakeWebSearcher{}).Run(context.Background(), " ")
+				return err
+			},
+			wantSub: "query is required",
+		},
+		{
+			name: "web search wraps backend error",
+			run: func() error {
+				_, err := NewWebSearchTool(fakeWebSearcher{err: errors.New("down")}).Run(context.Background(), "query")
+				return err
+			},
+			wantSub: "search web",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.run()
+			if err == nil || !strings.Contains(err.Error(), tt.wantSub) {
+				t.Fatalf("run() error = %v, want containing %q", err, tt.wantSub)
 			}
 		})
 	}

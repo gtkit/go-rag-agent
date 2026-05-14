@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gtkit/go-rag-agent/internal/llm"
+	"github.com/gtkit/go-rag-agent/internal/websearch"
 )
 
 type flakyChatModel struct {
@@ -79,6 +80,21 @@ func (e *sequencedEmbedder) EmbedTexts(_ context.Context, texts []string) ([][]f
 		rows = append(rows, []float32{1})
 	}
 	return rows, nil
+}
+
+type sequencedSearcher struct {
+	calls   int
+	errs    []error
+	results []websearch.Result
+}
+
+func (s *sequencedSearcher) Search(_ context.Context, query string) ([]websearch.Result, error) {
+	call := s.calls
+	s.calls++
+	if call < len(s.errs) && s.errs[call] != nil {
+		return nil, s.errs[call]
+	}
+	return s.results, nil
 }
 
 func TestProviderGovernanceConfig(t *testing.T) {
@@ -249,6 +265,116 @@ func TestResilientProviderGovernorSharedAcrossChatAndEmbedder(t *testing.T) {
 	}
 	if chat.generateCalls != 0 {
 		t.Fatalf("chat generate calls = %d, want 0", chat.generateCalls)
+	}
+}
+
+func TestResilientSearcherRetriesAndTraces(t *testing.T) {
+	t.Parallel()
+
+	searcher := &sequencedSearcher{
+		errs:    []error{errors.New("503 temporarily unavailable")},
+		results: []websearch.Result{{Title: "Example", URL: "https://example.com", Content: "snippet"}},
+	}
+	var traces []ProviderCallTrace
+	ctx := withProviderTraceObserver(context.Background(), func(call ProviderCallTrace) {
+		traces = append(traces, call)
+	})
+	governance := ProviderGovernanceConfig{
+		RetryMaxAttempts: 2,
+		RetryBaseDelay:   time.Millisecond,
+		RetryMaxDelay:    5 * time.Millisecond,
+		Pricing: ProviderPricingConfig{
+			WebSearchPerCallUSD: 0.02,
+		},
+	}
+	governors := newProviderGovernors(governance, nil)
+	wrapped := newResilientSearcher(searcher, governance, governors.forProvider("tavily"), "tavily")
+
+	results, err := wrapped.Search(ctx, "rag")
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Search() len = %d, want 1", len(results))
+	}
+	if searcher.calls != 2 {
+		t.Fatalf("Search() calls = %d, want 2", searcher.calls)
+	}
+	if len(traces) != 1 {
+		t.Fatalf("provider traces len = %d, want 1", len(traces))
+	}
+	if traces[0].Operation != "web_search" || traces[0].Attempts != 2 || traces[0].EstimatedCostUSD != 0.02 {
+		t.Fatalf("provider trace = %+v, want web_search attempts=2 cost=0.02", traces[0])
+	}
+}
+
+func TestProviderErrorClassificationAndRetry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		err       error
+		provider  string
+		wantClass string
+		wantRetry bool
+	}{
+		{name: "nil", err: nil, wantClass: "", wantRetry: false},
+		{name: "circuit", err: ErrProviderCircuitOpen, wantClass: providerErrorClassCircuit, wantRetry: false},
+		{name: "canceled", err: context.Canceled, wantClass: "canceled", wantRetry: false},
+		{name: "deadline", err: context.DeadlineExceeded, wantClass: providerErrorClassTransient, wantRetry: true},
+		{name: "rate limit text", err: errors.New("429 too many requests"), wantClass: providerErrorClassRateLimit, wantRetry: true},
+		{name: "auth text", err: errors.New("401 invalid api key"), wantClass: providerErrorClassAuth, wantRetry: false},
+		{name: "transient text", err: errors.New("connection reset by peer"), wantClass: providerErrorClassTransient, wantRetry: true},
+		{name: "permanent text", err: errors.New("400 invalid request"), wantClass: providerErrorClassPermanent, wantRetry: false},
+		{name: "unknown text", err: errors.New("provider exploded"), wantClass: providerErrorClassUnknown, wantRetry: false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotClass := classifyProviderError(tt.err, tt.provider)
+			if gotClass != tt.wantClass {
+				t.Fatalf("classifyProviderError() = %q, want %q", gotClass, tt.wantClass)
+			}
+			if gotRetry := shouldRetryProviderError(gotClass); gotRetry != tt.wantRetry {
+				t.Fatalf("shouldRetryProviderError(%q) = %v, want %v", gotClass, gotRetry, tt.wantRetry)
+			}
+		})
+	}
+}
+
+func TestProviderUsageAndCostHelpers(t *testing.T) {
+	t.Parallel()
+
+	usage := generationInfoUsage(map[string]any{
+		"PromptTokens":     int32(10),
+		"CompletionTokens": int64(5),
+		"TotalTokens":      float64(15),
+	})
+	if usage.PromptTokens != 10 || usage.CompletionTokens != 5 || usage.TotalTokens != 15 {
+		t.Fatalf("generationInfoUsage() = %+v, want 10/5/15", usage)
+	}
+
+	cfg := ProviderGovernanceConfig{
+		Pricing: ProviderPricingConfig{
+			ChatModels: map[string]TokenPricing{
+				"chat": {InputUSDPer1K: 0.1, OutputUSDPer1K: 0.2},
+			},
+			EmbeddingModels: map[string]TokenPricing{
+				"embed": {InputUSDPer1K: 0.01},
+			},
+		},
+	}
+	if got := estimateChatCost(cfg, "chat", 1000, 500); got != 0.2 {
+		t.Fatalf("estimateChatCost() = %v, want 0.2", got)
+	}
+	if got := estimateEmbeddingCost(cfg, "embed", 1000); got != 0.01 {
+		t.Fatalf("estimateEmbeddingCost() = %v, want 0.01", got)
+	}
+	if got := minDuration(time.Millisecond, 2*time.Millisecond); got != time.Millisecond {
+		t.Fatalf("minDuration() = %v, want 1ms", got)
 	}
 }
 

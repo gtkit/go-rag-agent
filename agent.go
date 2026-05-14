@@ -234,6 +234,9 @@ func New(cfg Config) (*Agent, error) {
 		reranker = NewRuleBasedReranker()
 	}
 	longTermMemory := cfg.Memory.LongTermMemory
+	if cfg.Memory.ProviderFailurePolicy == "" {
+		cfg.Memory.ProviderFailurePolicy = MemoryFailurePolicyFailClosed
+	}
 	governors := newProviderGovernors(cfg.ProviderGovernance, cfg.Logger)
 
 	embedder := cfg.Runtime.Embedder
@@ -313,7 +316,21 @@ func New(cfg Config) (*Agent, error) {
 	for _, tool := range toolRegistry.Tools() {
 		toolset = append(toolset, tool)
 	}
-	runner, err := graph.NewChatRunner(chatModel, toolset...)
+	var runner graph.Runner
+	if cfg.Runtime.ToolCallingRunner != nil {
+		runner = cfg.Runtime.ToolCallingRunner
+	} else if cfg.EnableToolCalling {
+		runner, err = NewToolCallingRunner(chatModel, toolRegistry, ToolCallingRunnerConfig{
+			MaxToolCalls:  cfg.MaxToolCalls,
+			MaxIterations: cfg.MaxIterations,
+		})
+		if err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("create tool-calling runner: %w", err)
+		}
+	} else {
+		runner, err = graph.NewChatRunner(chatModel, toolset...)
+	}
 	if err != nil {
 		_ = store.Close()
 		return nil, fmt.Errorf("create chat runner: %w", err)
@@ -471,6 +488,9 @@ func (a *Agent) Close() error {
 		_ = session.Close()
 	}
 
+	if a.cfg.Memory.Provider != nil {
+		_ = a.cfg.Memory.Provider.Close()
+	}
 	if a.store == nil {
 		return nil
 	}
@@ -872,7 +892,7 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 			return Answer{}, err
 		}
 	}
-	longTermMemoryText, err := a.retrieveLongTermMemory(ctx, s.id, rewrittenQuery, opts)
+	longTermMemoryText, err := a.retrieveMemoryText(ctx, s, rewrittenQuery, opts, trace)
 	err = normalizeExecutionBudgetError(ctx, err)
 	if err != nil {
 		return Answer{}, err
@@ -927,7 +947,7 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 	if trace != nil {
 		trace.setCitations(citations)
 	}
-	if err := a.storeLongTermMemory(ctx, s.id, query, answerText, opts); err != nil {
+	if err := a.storeMemory(ctx, s.id, query, answerText, opts, trace); err != nil {
 		return Answer{}, err
 	}
 	return Answer{
@@ -1005,7 +1025,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 			return "", emitError(err)
 		}
 	}
-	longTermMemoryText, err := a.retrieveLongTermMemory(ctx, s.id, rewrittenQuery, opts)
+	longTermMemoryText, err := a.retrieveMemoryText(ctx, s, rewrittenQuery, opts, trace)
 	err = normalizeExecutionBudgetError(ctx, err)
 	if err != nil {
 		return "", err
@@ -1102,7 +1122,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 	if err := a.recordExecutionTrace(ctx, s, finalTrace); err != nil {
 		return "", err
 	}
-	if err := a.storeLongTermMemory(ctx, s.id, query, answerBuilder.String(), opts); err != nil {
+	if err := a.storeMemory(ctx, s.id, query, answerBuilder.String(), opts, trace); err != nil {
 		return "", err
 	}
 
@@ -1265,6 +1285,60 @@ func (a *Agent) retrieveLongTermMemory(ctx context.Context, sessionID string, qu
 	return builder.String(), nil
 }
 
+func (a *Agent) retrieveMemoryText(ctx context.Context, s *Session, query string, opts QueryOptions, trace *executionTraceBuilder) (string, error) {
+	if a.cfg.Memory.Provider == nil {
+		return a.retrieveLongTermMemory(ctx, s.id, query, opts)
+	}
+	scope := opts.MemoryScope.normalized(a.cfg.AccessBoundary.Namespace)
+	startedAt := time.Now()
+	result, err := a.cfg.Memory.Provider.Retrieve(ctx, MemoryRetrieveRequest{
+		SessionID: s.id,
+		Query:     query,
+		Scope:     scope,
+		History:   turnsToMessages(s.history.Turns()),
+	})
+	if trace != nil {
+		trace.addMemory("retrieve", startedAt, err)
+	}
+	if err != nil {
+		if a.cfg.Memory.ProviderFailurePolicy == MemoryFailurePolicyFailOpen {
+			return "", nil
+		}
+		return "", fmt.Errorf("retrieve memory provider: %w", err)
+	}
+	return strings.TrimSpace(joinMemoryProviderResult(result)), nil
+}
+
+func turnsToMessages(turns []memory.Turn) []Message {
+	if len(turns) == 0 {
+		return nil
+	}
+	messages := make([]Message, 0, len(turns)*2)
+	for _, turn := range turns {
+		if strings.TrimSpace(turn.User) != "" {
+			messages = append(messages, Message{Role: RoleUser, Content: turn.User})
+		}
+		if strings.TrimSpace(turn.Assistant) != "" {
+			messages = append(messages, Message{Role: RoleAssistant, Content: turn.Assistant})
+		}
+	}
+	return messages
+}
+
+func joinMemoryProviderResult(result MemoryRetrieveResult) string {
+	parts := make([]string, 0, 1+len(result.Messages))
+	if strings.TrimSpace(result.MemoryText) != "" {
+		parts = append(parts, strings.TrimSpace(result.MemoryText))
+	}
+	for _, msg := range result.Messages {
+		if strings.TrimSpace(msg.Content) == "" {
+			continue
+		}
+		parts = append(parts, string(msg.Role)+": "+strings.TrimSpace(msg.Content))
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 func (a *Agent) storeLongTermMemory(ctx context.Context, sessionID string, query string, answer string, opts QueryOptions) error {
 	if a.longTermMemory == nil {
 		return nil
@@ -1297,6 +1371,26 @@ func (a *Agent) storeLongTermMemory(ctx context.Context, sessionID string, query
 			ExpiresAt: expiresAt,
 		},
 	})
+}
+
+func (a *Agent) storeMemory(ctx context.Context, sessionID string, query string, answer string, opts QueryOptions, trace *executionTraceBuilder) error {
+	if a.cfg.Memory.Provider == nil {
+		return a.storeLongTermMemory(ctx, sessionID, query, answer, opts)
+	}
+	startedAt := time.Now()
+	err := a.cfg.Memory.Provider.Memorize(ctx, MemoryMemorizeRequest{
+		SessionID: sessionID,
+		Scope:     opts.MemoryScope.normalized(a.cfg.AccessBoundary.Namespace),
+		User:      query,
+		Assistant: answer,
+	})
+	if trace != nil {
+		trace.addMemory("memorize", startedAt, err)
+	}
+	if err != nil {
+		return fmt.Errorf("memorize memory provider: %w", err)
+	}
+	return nil
 }
 
 func filterLongTermMemoryHits(hits []LongTermMemoryHit, scope MemoryScope, now time.Time) []LongTermMemoryHit {

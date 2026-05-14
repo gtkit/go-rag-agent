@@ -66,13 +66,20 @@ func main() {
 	ctx := context.Background()
 
 	cfg := ragagent.Config{
-		ChatModel:       "gpt-4o-mini",
-		ChatBaseURL:     "https://api.openai.example/v1",
-		ChatAPIKey:      "replace-with-your-chat-key",
-		EmbeddingModel:  "text-embedding-3-small",
-		EmbeddingAPIKey: "replace-with-your-embedding-key",
-		DataDir:         ".rag-data",
-		RequestTimeout:  20 * time.Second,
+		ChatModel:        os.Getenv("RAGAGENT_CHAT_MODEL"),
+		ChatBaseURL:      os.Getenv("RAGAGENT_CHAT_BASE_URL"),
+		ChatAPIKey:       os.Getenv("RAGAGENT_CHAT_API_KEY"),
+		EmbeddingModel:   os.Getenv("RAGAGENT_EMBEDDING_MODEL"),
+		EmbeddingBaseURL: os.Getenv("RAGAGENT_EMBEDDING_BASE_URL"),
+		EmbeddingAPIKey:  os.Getenv("RAGAGENT_EMBEDDING_API_KEY"),
+		DataDir:          ".rag-data",
+		RequestTimeout:   20 * time.Second,
+	}
+	if cfg.EmbeddingBaseURL == "" {
+		cfg.EmbeddingBaseURL = cfg.ChatBaseURL
+	}
+	if cfg.EmbeddingAPIKey == "" {
+		cfg.EmbeddingAPIKey = cfg.ChatAPIKey
 	}
 
 	agent, err := ragagent.New(cfg)
@@ -113,6 +120,7 @@ func main() {
 - `ChatBaseURL`
 - `ChatAPIKey`
 - `EmbeddingModel`
+- `EmbeddingBaseURL` / `EmbeddingAPIKey` 可独立配置；为空时示例会复用 chat provider 的 base URL / API key
 
 可选项（由 `New` / `Validate` 应用默认值）：
 - `TopK`（默认 `5`）
@@ -138,6 +146,30 @@ func main() {
   说明：可选本地 prompt cache；支持缓存构造后的 prompt messages
 - `AccessBoundary`
   说明：可选 namespace 与来源权限边界
+
+示例运行环境变量：
+
+```bash
+export RAGAGENT_CHAT_MODEL="gpt-4o-mini"
+export RAGAGENT_CHAT_BASE_URL="https://api.example.com/v1"
+export RAGAGENT_CHAT_API_KEY="$YOUR_CHAT_API_KEY"
+export RAGAGENT_EMBEDDING_MODEL="text-embedding-3-small"
+# 如 embedding 与 chat 使用不同服务，再单独设置：
+# export RAGAGENT_EMBEDDING_BASE_URL="https://embedding.example.com/v1"
+# export RAGAGENT_EMBEDDING_API_KEY="$YOUR_EMBEDDING_API_KEY"
+
+go run ./examples/basic
+go run ./examples/service
+```
+
+pgvector 示例额外需要 `RAGAGENT_PGVECTOR_DSN`：
+
+```bash
+export RAGAGENT_PGVECTOR_DSN="postgres://user:pass@localhost:5432/rag?sslmode=disable"
+go run ./examples/pgvector
+```
+
+示例代码不会硬编码真实 API key。生产环境请从环境变量、密钥管理服务或运行平台 secret 注入读取凭据，不要把凭据提交到版本库。
 - `ToolRegistry`
   说明：可选工具注册表；支持注册或覆写工具
 - `ProviderGovernance`
@@ -220,8 +252,8 @@ func main() {
 ```go
 chatModel, err := ragagent.NewOpenAIChatModel(ctx, ragagent.ChatModelConfig{
 	Model:   "gpt-4o-mini",
-	BaseURL: "https://api.openai.example/v1",
-	APIKey:  "replace-with-your-chat-key",
+	BaseURL: os.Getenv("RAGAGENT_CHAT_BASE_URL"),
+	APIKey:  os.Getenv("RAGAGENT_CHAT_API_KEY"),
 	Timeout: 20 * time.Second,
 })
 if err != nil {
@@ -230,8 +262,8 @@ if err != nil {
 
 embedder, err := ragagent.NewOpenAIEmbedder(ctx, ragagent.EmbedderConfig{
 	Model:   "text-embedding-3-small",
-	BaseURL: "https://api.openai.example/v1",
-	APIKey:  "replace-with-your-embedding-key",
+	BaseURL: os.Getenv("RAGAGENT_CHAT_BASE_URL"),
+	APIKey:  os.Getenv("RAGAGENT_EMBEDDING_API_KEY"),
 	Timeout: 20 * time.Second,
 })
 if err != nil {
@@ -276,10 +308,10 @@ if err != nil {
 
 cfg := ragagent.Config{
 	ChatModel:      "gpt-4o-mini",
-	ChatBaseURL:    "https://api.openai.example/v1",
-	ChatAPIKey:     "replace-with-your-chat-key",
+	ChatBaseURL:    os.Getenv("RAGAGENT_CHAT_BASE_URL"),
+	ChatAPIKey:     os.Getenv("RAGAGENT_CHAT_API_KEY"),
 	EmbeddingModel: "text-embedding-3-small",
-	EmbeddingAPIKey:"replace-with-your-embedding-key",
+	EmbeddingAPIKey: os.Getenv("RAGAGENT_EMBEDDING_API_KEY"),
 	Storage: ragagent.StorageComponents{
 		VectorStore:    store,
 		DocumentLoader: ragagent.NewFileDocumentLoader(),
@@ -496,10 +528,10 @@ memoryStore := ragagent.NewInMemoryLongTermMemoryStore()
 
 cfg := ragagent.Config{
 	ChatModel:       "gpt-4o-mini",
-	ChatBaseURL:     "https://api.openai.example/v1",
-	ChatAPIKey:      "replace-with-your-chat-key",
+	ChatBaseURL:     os.Getenv("RAGAGENT_CHAT_BASE_URL"),
+	ChatAPIKey:      os.Getenv("RAGAGENT_CHAT_API_KEY"),
 	EmbeddingModel:  "text-embedding-3-small",
-	EmbeddingAPIKey: "replace-with-your-embedding-key",
+	EmbeddingAPIKey: os.Getenv("RAGAGENT_EMBEDDING_API_KEY"),
 	Memory: ragagent.MemoryComponents{
 		LongTermMemory: memoryStore,
 	},
@@ -518,6 +550,31 @@ cfg := ragagent.Config{
 - `LongTermMemoryTTL` 配置后，过期记忆不会再参与检索
 - 超长 query/answer 会按 `LongTermMemoryMaxStoredRunes` 做本地确定性压缩
 - 可以通过 `QueryOptions.MemoryScope` 继续按 user/tenant 分层；tenant 为空时回退到 `AccessBoundary.Namespace`
+
+如果你已有外部记忆服务，可以通过 `MemoryProvider` 接入问答生命周期：
+- `Retrieve`
+  说明：问答前返回可注入的 memory text / messages
+- `Memorize`
+  说明：问答成功后写入本轮 user query 与 assistant answer
+
+现有长期记忆 store 也可以适配为 provider：
+
+```go
+store := ragagent.NewInMemoryLongTermMemoryStore()
+provider := ragagent.NewLongTermMemoryProvider(store, embedder, ragagent.LongTermMemoryProviderConfig{
+	TopK:      3,
+	Threshold: 0,
+})
+
+cfg := ragagent.Config{
+	Memory: ragagent.MemoryComponents{
+		Provider:              provider,
+		ProviderFailurePolicy: ragagent.MemoryFailurePolicyFailOpen,
+	},
+}
+```
+
+`MemoryFailurePolicyFailClosed` 会在记忆检索失败时返回错误；`MemoryFailurePolicyFailOpen` 会记录 trace 并按空记忆降级。
 
 当前限制：
 - 第一版只做同 Session 长期记忆，不做跨 Session 共享
@@ -568,10 +625,10 @@ if err != nil {
 
 cfg := ragagent.Config{
 	ChatModel:       "gpt-4o-mini",
-	ChatBaseURL:     "https://api.openai.example/v1",
-	ChatAPIKey:      "replace-with-your-chat-key",
+	ChatBaseURL:     os.Getenv("RAGAGENT_CHAT_BASE_URL"),
+	ChatAPIKey:      os.Getenv("RAGAGENT_CHAT_API_KEY"),
 	EmbeddingModel:  "text-embedding-3-small",
-	EmbeddingAPIKey: "replace-with-your-embedding-key",
+	EmbeddingAPIKey: os.Getenv("RAGAGENT_EMBEDDING_API_KEY"),
 	Memory: ragagent.MemoryComponents{
 		LongTermMemory: ragagent.NewVectorLongTermMemoryStore(memoryVectorStore),
 	},
@@ -607,10 +664,10 @@ if err != nil {
 
 cfg := ragagent.Config{
 	ChatModel:      "gpt-4o-mini",
-	ChatBaseURL:    "https://api.openai.example/v1",
-	ChatAPIKey:     "replace-with-your-chat-key",
+	ChatBaseURL:    os.Getenv("RAGAGENT_CHAT_BASE_URL"),
+	ChatAPIKey:     os.Getenv("RAGAGENT_CHAT_API_KEY"),
 	EmbeddingModel: "text-embedding-3-small",
-	EmbeddingAPIKey:"replace-with-your-embedding-key",
+	EmbeddingAPIKey: os.Getenv("RAGAGENT_EMBEDDING_API_KEY"),
 	Storage: ragagent.StorageComponents{
 		VectorStore:    store,
 		DocumentLoader: ragagent.NewFileDocumentLoader(),
@@ -747,10 +804,10 @@ if err != nil {
 
 cfg := ragagent.Config{
     ChatModel:          "gpt-4o-mini",
-    ChatBaseURL:        "https://api.openai.example/v1",
-    ChatAPIKey:         "replace-with-your-chat-key",
+    ChatBaseURL:        os.Getenv("RAGAGENT_CHAT_BASE_URL"),
+    ChatAPIKey:         os.Getenv("RAGAGENT_CHAT_API_KEY"),
     EmbeddingModel:     "text-embedding-3-small",
-    EmbeddingAPIKey:    "replace-with-your-embedding-key",
+    EmbeddingAPIKey:    os.Getenv("RAGAGENT_EMBEDDING_API_KEY"),
     DocumentConverters: []ragagent.DocumentConverter{converter},
 }
 
@@ -779,10 +836,10 @@ if err := agent.AddKnowledge(ctx, ragagent.ConvertibleFileSource("knowledge/hand
 ```go
 cfg := ragagent.Config{
 	ChatModel:      "gpt-4o-mini",
-	ChatBaseURL:    "https://api.openai.example/v1",
-	ChatAPIKey:     "replace-with-your-chat-key",
+	ChatBaseURL:    os.Getenv("RAGAGENT_CHAT_BASE_URL"),
+	ChatAPIKey:     os.Getenv("RAGAGENT_CHAT_API_KEY"),
 	EmbeddingModel: "text-embedding-3-small",
-	EmbeddingAPIKey:"replace-with-your-embedding-key",
+	EmbeddingAPIKey: os.Getenv("RAGAGENT_EMBEDDING_API_KEY"),
 	PDFOCRBridge: ragagent.PDFOCRBridgeConfig{
 		Command: "my-pdf-ocr",
 		Args: []string{
@@ -817,10 +874,10 @@ cfg := ragagent.Config{
 ```go
 cfg := ragagent.Config{
 	ChatModel:      "gpt-4o-mini",
-	ChatBaseURL:    "https://api.openai.example/v1",
-	ChatAPIKey:     "replace-with-your-chat-key",
+	ChatBaseURL:    os.Getenv("RAGAGENT_CHAT_BASE_URL"),
+	ChatAPIKey:     os.Getenv("RAGAGENT_CHAT_API_KEY"),
 	EmbeddingModel: "text-embedding-3-small",
-	EmbeddingAPIKey:"replace-with-your-embedding-key",
+	EmbeddingAPIKey: os.Getenv("RAGAGENT_EMBEDDING_API_KEY"),
 	ImageTextBridge: ragagent.ImageTextBridgeConfig{
 		Command: "my-image-text",
 		Args: []string{
@@ -907,10 +964,10 @@ err := agent.GetSession("me").AskStreamWithOptions(ctx, "总结网关接口规�
 ```go
 cfg := ragagent.Config{
 	ChatModel:         "gpt-4o-mini",
-	ChatBaseURL:       "https://api.openai.example/v1",
-	ChatAPIKey:        "replace-with-your-chat-key",
+	ChatBaseURL:       os.Getenv("RAGAGENT_CHAT_BASE_URL"),
+	ChatAPIKey:        os.Getenv("RAGAGENT_CHAT_API_KEY"),
 	EmbeddingModel:    "text-embedding-3-small",
-	EmbeddingAPIKey:   "replace-with-your-embedding-key",
+	EmbeddingAPIKey:   os.Getenv("RAGAGENT_EMBEDDING_API_KEY"),
 	EnableHybridSearch: true,
 	EnableRerank:       true,
 	HybridCandidateMultiplier: 4,
@@ -971,10 +1028,10 @@ go test -bench=. -run '^$' ./internal/retrieval ./internal/storage
 ```go
 cfg := ragagent.Config{
 	ChatModel:      "gpt-4o-mini",
-	ChatBaseURL:    "https://api.openai.example/v1",
-	ChatAPIKey:     "replace-with-your-chat-key",
+	ChatBaseURL:    os.Getenv("RAGAGENT_CHAT_BASE_URL"),
+	ChatAPIKey:     os.Getenv("RAGAGENT_CHAT_API_KEY"),
 	EmbeddingModel: "text-embedding-3-small",
-	EmbeddingAPIKey:"replace-with-your-embedding-key",
+	EmbeddingAPIKey: os.Getenv("RAGAGENT_EMBEDDING_API_KEY"),
 	EnableWebSearch: true,
 	WebSearch: ragagent.WebSearchConfig{
 		APIKey:      "tvly-your-key",
@@ -1031,10 +1088,10 @@ if err := registry.Register(myTool{}); err != nil {
 
 cfg := ragagent.Config{
 	ChatModel:      "gpt-4o-mini",
-	ChatBaseURL:    "https://api.openai.example/v1",
-	ChatAPIKey:     "replace-with-your-chat-key",
+	ChatBaseURL:    os.Getenv("RAGAGENT_CHAT_BASE_URL"),
+	ChatAPIKey:     os.Getenv("RAGAGENT_CHAT_API_KEY"),
 	EmbeddingModel: "text-embedding-3-small",
-	EmbeddingAPIKey:"replace-with-your-embedding-key",
+	EmbeddingAPIKey: os.Getenv("RAGAGENT_EMBEDDING_API_KEY"),
 	ToolRegistry:   registry,
 }
 ```
@@ -1065,7 +1122,55 @@ registry := ragagent.NewToolRegistry(mcpTool)
 - 只有在本地证据不足时，才会进入 fallback 工具链
 - fallback 工具按注册顺序尝试
 - 如果调用方注册同名 `search_web`，会覆写默认 web 工具
-- 这轮仍然不是完整的 ReAct/tool-calling agent loop；当前工具链主要用于 evidence-empty fallback
+- 默认工具链主要用于 evidence-empty fallback
+
+## 结构化工具与 Tool Calling
+
+除了基础 `Tool` 文本接口，当前库还提供结构化工具契约：
+- `StructuredTool`
+  说明：声明 `ToolSchema`，接收结构化 JSON 参数，返回 `ToolResult`
+- `NewStructuredToolAdapter(tool)`
+  说明：把结构化工具适配成现有 `Tool`，可直接注册到 `ToolRegistry`
+- `ValidateToolArguments(schema, args)`
+  说明：在工具业务逻辑前执行 required、类型、enum、字符串长度和数值边界校验
+
+```go
+type lookupTool struct{}
+
+func (lookupTool) Name() string { return "lookup" }
+func (lookupTool) Description() string { return "Look up safe internal data" }
+func (lookupTool) Schema() ragagent.ToolSchema {
+	return ragagent.ToolSchema{
+		Properties: map[string]ragagent.ToolParameterSchema{
+			"query": {Type: ragagent.ToolParameterString, MinLength: 1, MaxLength: 128},
+		},
+		Required: []string{"query"},
+	}
+}
+func (lookupTool) RunStructured(ctx context.Context, args map[string]any) (ragagent.ToolResult, error) {
+	return ragagent.ToolResult{Text: "result for " + args["query"].(string)}, nil
+}
+
+registry := ragagent.NewToolRegistry(ragagent.NewStructuredToolAdapter(lookupTool{}))
+```
+
+Tool calling 默认关闭。显式启用后，SDK 会使用有限的单 agent 工具循环：
+
+```go
+cfg := ragagent.Config{
+	EnableToolCalling: true,
+	ToolRegistry:      registry,
+	MaxToolCalls:      4,
+	MaxIterations:     3,
+}
+```
+
+生产安全边界：
+- SDK 不内置 Shell、数据库执行、文件写入或任务调度工具。
+- 所有可调用工具都必须由宿主服务显式注册。
+- 启用 tool calling 时必须配置 `ToolRegistry`，否则配置校验失败。
+- 工具循环同时受 `MaxToolCalls`、`MaxIterations` 和调用方 `context.Context` 控制。
+- 工具实现应由宿主服务自行做鉴权、租户隔离、输入长度限制、超时、审计和脱敏。
 
 ## 外部 Reranker 适配
 
@@ -1078,7 +1183,7 @@ reranker, err := ragagent.NewOpenAIReranker(
     httpc.New(httpc.WithTimeout(10*time.Second)),
     ragagent.OpenAIRerankerConfig{
         BaseURL: "https://rerank.example/v1/rerank",
-        APIKey:  "replace-with-your-rerank-key",
+        APIKey:  os.Getenv("RAGAGENT_RERANK_API_KEY"),
         Model:   "rerank-model",
     },
 )
@@ -1243,6 +1348,26 @@ log.Printf("trace summary session=%s success=%v tools=%d citations=%d",
 )
 ```
 
+标准 recorder adapter：
+- `NewMultiTraceRecorder(...)`
+  说明：fan-out 到多个 recorder，并隔离单个 recorder 的 panic
+- `NewJSONLTraceRecorder(writer)`
+  说明：输出一行安全摘要 JSON，不输出完整 prompt、evidence 或密钥
+- `NewLoggerTraceRecorder(logger)`
+  说明：复用现有 `Logger` 接口输出执行摘要和 fallback 告警
+
+示例：
+
+```go
+var traceLog bytes.Buffer
+cfg := ragagent.Config{
+	TraceRecorder: ragagent.NewMultiTraceRecorder(
+		ragagent.NewJSONLTraceRecorder(&traceLog),
+		ragagent.NewLoggerTraceRecorder(logger),
+	),
+}
+```
+
 如果你希望输出日志摘要，可以配置 `Config.Logger`。库不会自己初始化日志实例；未提供 logger 时保持 no-op。
 
 ## Provider 治理与 usage/cost 聚合
@@ -1264,10 +1389,10 @@ log.Printf("trace summary session=%s success=%v tools=%d citations=%d",
 ```go
 cfg := ragagent.Config{
 	ChatModel:      "gpt-4o-mini",
-	ChatBaseURL:    "https://api.openai.example/v1",
-	ChatAPIKey:     "replace-with-your-chat-key",
+	ChatBaseURL:    os.Getenv("RAGAGENT_CHAT_BASE_URL"),
+	ChatAPIKey:     os.Getenv("RAGAGENT_CHAT_API_KEY"),
 	EmbeddingModel: "text-embedding-3-small",
-	EmbeddingAPIKey:"replace-with-your-embedding-key",
+	EmbeddingAPIKey: os.Getenv("RAGAGENT_EMBEDDING_API_KEY"),
 	ProviderGovernance: ragagent.ProviderGovernanceConfig{
 		RetryMaxAttempts: 2,
 		RetryBaseDelay:   200 * time.Millisecond,
@@ -1323,10 +1448,10 @@ cfg := ragagent.Config{
 ```go
 cfg := ragagent.Config{
 	ChatModel:           "gpt-4o-mini",
-	ChatBaseURL:         "https://api.openai.example/v1",
-	ChatAPIKey:          "replace-with-your-chat-key",
+	ChatBaseURL:         os.Getenv("RAGAGENT_CHAT_BASE_URL"),
+	ChatAPIKey:          os.Getenv("RAGAGENT_CHAT_API_KEY"),
 	EmbeddingModel:      "text-embedding-3-small",
-	EmbeddingAPIKey:     "replace-with-your-embedding-key",
+	EmbeddingAPIKey:     os.Getenv("RAGAGENT_EMBEDDING_API_KEY"),
 	MaxPromptTokens:     4096,
 	MaxHistoryTokens:    1024,
 	MaxEvidenceTokens:   2048,

@@ -1,9 +1,14 @@
 package llm
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	lcllms "github.com/tmc/langchaingo/llms"
 )
 
 func TestChatConfigValidate(t *testing.T) {
@@ -359,6 +364,12 @@ func TestOpenAIEmbedderEmbedTextsFailFastValidation(t *testing.T) {
 			wantErr:   true,
 			errPrefix: "openai embedder is nil",
 		},
+		{
+			name:      "nil receiver reaches nil-client guard",
+			texts:     []string{"hello"},
+			wantErr:   true,
+			errPrefix: "openai embedder is nil",
+		},
 	}
 
 	for _, tc := range tests {
@@ -366,7 +377,10 @@ func TestOpenAIEmbedderEmbedTextsFailFastValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			embedder := &OpenAIEmbedder{}
+			var embedder *OpenAIEmbedder
+			if tc.name != "nil receiver reaches nil-client guard" {
+				embedder = &OpenAIEmbedder{}
+			}
 			_, err := embedder.EmbedTexts(t.Context(), tc.texts)
 			if tc.wantErr && err == nil {
 				t.Fatalf("EmbedTexts() error = nil, want non-nil")
@@ -410,6 +424,11 @@ func TestConvertEmbeddingRows(t *testing.T) {
 			input: nil,
 			want:  nil,
 		},
+		{
+			name:  "nil row",
+			input: [][]float64{nil},
+			want:  [][]float32{nil},
+		},
 	}
 
 	for _, tc := range tests {
@@ -433,5 +452,111 @@ func TestConvertEmbeddingRows(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestOpenAIChatModelFailFastAndMessageConversion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		run     func() error
+		wantErr string
+	}{
+		{
+			name: "constructor rejects invalid config",
+			run: func() error {
+				_, err := NewOpenAIChatModel(context.Background(), ChatConfig{})
+				return err
+			},
+			wantErr: "validate chat config",
+		},
+		{
+			name: "generate rejects nil client",
+			run: func() error {
+				_, err := (&OpenAIChatModel{}).Generate(context.Background(), []Message{{Role: RoleUser, Content: "hello"}})
+				return err
+			},
+			wantErr: "openai chat model is nil",
+		},
+		{
+			name: "stream rejects nil client",
+			run: func() error {
+				return (&OpenAIChatModel{}).Stream(context.Background(), []Message{{Role: RoleUser, Content: "hello"}}, func(string) error { return nil })
+			},
+			wantErr: "openai chat model is nil",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.run()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("run() error = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+
+	msgs := toLangChainMessages([]Message{
+		{Role: RoleSystem, Content: "system"},
+		{Role: RoleAssistant, Content: "assistant"},
+		{Role: RoleUser, Content: "user"},
+		{Role: Role("custom"), Content: "custom"},
+	})
+	if len(msgs) != 4 {
+		t.Fatalf("len(toLangChainMessages()) = %d, want 4", len(msgs))
+	}
+	for i, want := range []string{"system", "assistant", "user", "custom"} {
+		if got := msgs[i].Parts[0].(lcllms.TextContent).Text; got != want {
+			t.Fatalf("message[%d] text = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestOpenAIEmbedderConstructorValidation(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewOpenAIEmbedder(context.Background(), EmbeddingConfig{})
+	if err == nil || !strings.Contains(err.Error(), "validate embedding config") {
+		t.Fatalf("NewOpenAIEmbedder() error = %v, want validation error", err)
+	}
+}
+
+func TestOpenAIConstructorsCreateClients(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"not used"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	chat, err := NewOpenAIChatModel(context.Background(), ChatConfig{
+		Model:   "test-chat",
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+		Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIChatModel() error = %v", err)
+	}
+	if chat == nil {
+		t.Fatal("NewOpenAIChatModel() = nil, want model")
+	}
+
+	embedder, err := NewOpenAIEmbedder(context.Background(), EmbeddingConfig{
+		Model:   "test-embedding",
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+		Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIEmbedder() error = %v", err)
+	}
+	if embedder == nil {
+		t.Fatal("NewOpenAIEmbedder() = nil, want embedder")
 	}
 }

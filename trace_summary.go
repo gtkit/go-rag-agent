@@ -12,6 +12,7 @@ type ExecutionTraceSummary struct {
 	RetrievalHitCount     int
 	ToolCallCount         int
 	ProviderCallCount     int
+	MemoryEventCount      int
 	CitationCount         int
 	FallbackCount         int
 	PromptCacheHit        bool
@@ -30,6 +31,7 @@ func SummarizeExecutionTrace(trace ExecutionTrace) ExecutionTraceSummary {
 		RetrievalHitCount:     trace.Retrieval.FinalHitCount,
 		ToolCallCount:         len(trace.ToolCalls),
 		ProviderCallCount:     len(trace.ProviderCalls),
+		MemoryEventCount:      len(trace.Memory),
 		CitationCount:         len(trace.Citations),
 		FallbackCount:         len(trace.Fallbacks),
 		PromptCacheHit:        trace.PromptCacheHit,

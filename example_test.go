@@ -1,7 +1,9 @@
 package ragagent_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -246,5 +248,59 @@ func ExampleNewCommandDocumentConverter() {
 
 	// Output:
 	// office-converter
+	// true
+}
+
+func ExampleNewStructuredToolAdapter() {
+	tool := ragagent.NewStructuredToolAdapter(exampleStructuredTool{})
+	registry := ragagent.NewToolRegistry(tool)
+
+	registered, _ := registry.Lookup("lookup")
+	result, err := registered.Run(context.Background(), `{"query":"rag"}`)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(result)
+
+	// Output:
+	// found: rag
+}
+
+type exampleStructuredTool struct{}
+
+func (exampleStructuredTool) Name() string { return "lookup" }
+
+func (exampleStructuredTool) Description() string { return "Look up safe internal data." }
+
+func (exampleStructuredTool) Schema() ragagent.ToolSchema {
+	return ragagent.ToolSchema{
+		Properties: map[string]ragagent.ToolParameterSchema{
+			"query": {Type: ragagent.ToolParameterString, MinLength: 1},
+		},
+		Required: []string{"query"},
+	}
+}
+
+func (exampleStructuredTool) RunStructured(_ context.Context, args map[string]any) (ragagent.ToolResult, error) {
+	return ragagent.ToolResult{Text: "found: " + args["query"].(string)}, nil
+}
+
+func ExampleNewJSONLTraceRecorder() {
+	var buf bytes.Buffer
+	recorder := ragagent.NewJSONLTraceRecorder(&buf)
+	recorder.OnExecutionTrace(context.Background(), ragagent.ExecutionTrace{
+		SessionID: "session-1",
+		Success:   true,
+	})
+
+	var line map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &line); err != nil {
+		panic(err)
+	}
+	fmt.Println(line["session_id"])
+	fmt.Println(line["success"])
+
+	// Output:
+	// session-1
 	// true
 }

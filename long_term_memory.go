@@ -15,6 +15,9 @@ import (
 // MemoryComponents 定义长期记忆注入组件。
 type MemoryComponents struct {
 	LongTermMemory LongTermMemoryStore
+	Provider       MemoryProvider
+	// ProviderFailurePolicy controls whether memory provider retrieval failures fail the request.
+	ProviderFailurePolicy MemoryFailurePolicy
 }
 
 // LongTermMemoryRecord 表示一条长期记忆记录。

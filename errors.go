@@ -17,6 +17,10 @@ var (
 	ErrEvidenceInsufficient = errors.New("ragagent: evidence insufficient")
 	// ErrToolCallLimitExceeded indicates tool execution exceeded configured max calls.
 	ErrToolCallLimitExceeded = errors.New("ragagent: tool call limit exceeded")
+	// ErrToolCallInvalid indicates a model-requested tool call is invalid.
+	ErrToolCallInvalid = errors.New("ragagent: tool call invalid")
+	// ErrToolArgumentInvalid indicates structured tool arguments failed validation.
+	ErrToolArgumentInvalid = errors.New("ragagent: tool argument invalid")
 	// ErrStructuredOutputTarget indicates structured output target is invalid.
 	ErrStructuredOutputTarget = errors.New("ragagent: structured output target is invalid")
 	// ErrStructuredOutputInvalid indicates model output could not be parsed into structured JSON.

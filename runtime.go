@@ -3,6 +3,7 @@ package ragagent
 import (
 	"context"
 
+	"github.com/gtkit/go-rag-agent/internal/graph"
 	"github.com/gtkit/go-rag-agent/internal/llm"
 )
 
@@ -35,8 +36,9 @@ type EmbedderConfig = llm.EmbeddingConfig
 
 // RuntimeComponents 定义 Agent 可选注入的运行时组件。
 type RuntimeComponents struct {
-	ChatModel ChatModel
-	Embedder  Embedder
+	ChatModel         ChatModel
+	Embedder          Embedder
+	ToolCallingRunner graph.Runner
 }
 
 // NewOpenAIChatModel 创建默认 OpenAI-compatible 聊天模型。

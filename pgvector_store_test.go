@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gtkit/pgorm"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestPGVectorStoreConfigValidate(t *testing.T) {
@@ -94,6 +95,16 @@ func TestPGVectorStoreConfigValidate(t *testing.T) {
 				TableName:       "knowledge_chunks",
 				Dimensions:      1536,
 				UpsertBatchSize: -1,
+			},
+			wantErr: ErrInvalidConfig,
+		},
+		{
+			name: "rejects unsupported index strategy",
+			cfg: PGVectorStoreConfig{
+				ConnString:    "postgres://user:pass@127.0.0.1:5432/dbname?sslmode=disable",
+				TableName:     "knowledge_chunks",
+				Dimensions:    1536,
+				IndexStrategy: "diskann",
 			},
 			wantErr: ErrInvalidConfig,
 		},
@@ -220,6 +231,20 @@ func TestPGVectorStoreCreateTableAndIndexSQL(t *testing.T) {
 				`ef_construction = 64`,
 			},
 		},
+		{
+			name: "ivfflat index enabled",
+			cfg: PGVectorStoreConfig{
+				ConnString:    "postgres://user:pass@127.0.0.1:5432/dbname?sslmode=disable",
+				TableName:     "knowledge_chunks",
+				Dimensions:    1536,
+				IndexStrategy: pgVectorIndexIVFFlat,
+			},
+			wantIdx: []string{
+				`vector_cosine_ops`,
+				`USING ivfflat`,
+				`lists = 100`,
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -248,6 +273,111 @@ func TestPGVectorStoreCreateTableAndIndexSQL(t *testing.T) {
 				if strings.Contains(idxSQL, miss) {
 					t.Fatalf("indexStatements() = %q, unexpected %q", idxSQL, miss)
 				}
+			}
+		})
+	}
+}
+
+func TestPGVectorStoreValidateChunkAndHelpers(t *testing.T) {
+	t.Parallel()
+
+	store := &pgVectorStore{
+		cfg: PGVectorStoreConfig{
+			Dimensions: 3,
+		}.normalized(),
+	}
+	tests := []struct {
+		name    string
+		chunk   ChunkRecord
+		wantErr string
+	}{
+		{
+			name:    "rejects missing chunk id",
+			chunk:   ChunkRecord{ParentID: "doc", Embedding: []float32{1, 2, 3}},
+			wantErr: "chunk id is empty",
+		},
+		{
+			name:    "rejects missing parent id",
+			chunk:   ChunkRecord{ChunkID: "doc:0", Embedding: []float32{1, 2, 3}},
+			wantErr: "parent id is empty",
+		},
+		{
+			name:    "rejects dimension mismatch",
+			chunk:   ChunkRecord{ChunkID: "doc:0", ParentID: "doc", Embedding: []float32{1}},
+			wantErr: "embedding dimensions",
+		},
+		{
+			name:  "accepts valid chunk",
+			chunk: ChunkRecord{ChunkID: "doc:0", ParentID: "doc", Embedding: []float32{1, 2, 3}},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := store.validateChunk(tt.chunk)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("validateChunk() error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validateChunk() error = %v", err)
+			}
+		})
+	}
+
+	data, err := marshalMetadataJSON(map[string]string{"team": "search"})
+	if err != nil {
+		t.Fatalf("marshalMetadataJSON() error = %v", err)
+	}
+	if got := string(data); !strings.Contains(got, `"team":"search"`) {
+		t.Fatalf("marshalMetadataJSON() = %s, want team metadata", got)
+	}
+	empty, err := marshalMetadataJSON(nil)
+	if err != nil {
+		t.Fatalf("marshalMetadataJSON(nil) error = %v", err)
+	}
+	if string(empty) != `{}` {
+		t.Fatalf("marshalMetadataJSON(nil) = %s, want {}", empty)
+	}
+}
+
+func TestPGVectorStoreDuplicateExtensionRace(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "matches duplicate extension name index",
+			err:  &pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint \"pg_extension_name_index\""},
+			want: true,
+		},
+		{
+			name: "other unique violation is not extension race",
+			err:  &pgconn.PgError{Code: "23505", Message: "other unique constraint"},
+			want: false,
+		},
+		{
+			name: "plain error is not extension race",
+			err:  errors.New("boom"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := isDuplicateExtensionRace(tt.err); got != tt.want {
+				t.Fatalf("isDuplicateExtensionRace() = %v, want %v", got, tt.want)
 			}
 		})
 	}
