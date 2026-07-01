@@ -17,7 +17,11 @@ type ExecutionTraceSummary struct {
 	FallbackCount         int
 	PromptCacheHit        bool
 	TotalEstimatedCostUSD float64
-	Err                   string
+	// Refused 标识本次执行是否因证据不足而拒答。
+	Refused bool
+	// RefusalReason 给出拒答的结构化原因；未拒答时为 RefusalNone。
+	RefusalReason RefusalReason
+	Err           string
 }
 
 // SummarizeExecutionTrace 生成一个适合日志和回归消费的执行摘要。
@@ -36,6 +40,8 @@ func SummarizeExecutionTrace(trace ExecutionTrace) ExecutionTraceSummary {
 		FallbackCount:         len(trace.Fallbacks),
 		PromptCacheHit:        trace.PromptCacheHit,
 		TotalEstimatedCostUSD: trace.TotalEstimatedCostUSD,
+		Refused:               trace.Refused,
+		RefusalReason:         trace.RefusalReason,
 	}
 	if trace.Err != nil {
 		summary.Err = trace.Err.Error()

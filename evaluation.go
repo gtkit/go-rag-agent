@@ -20,6 +20,9 @@ type EvalCase struct {
 	WantCitationSources    []string
 	WantAnswerContains     []string
 	WantGroundedSubstrings []string
+	// ExpectRefusal 为 true 时，本用例以"实际拒答"为通过条件，
+	// 用于评测不可回答类问题；此时不再计算 recall/precision/groundedness/answer-match。
+	ExpectRefusal bool
 }
 
 // EvalResult 描述一条评测用例的结果。
@@ -30,8 +33,10 @@ type EvalResult struct {
 	CitationPrecision float64
 	Groundedness      float64
 	AnswerMatch       bool
-	Passed            bool
-	Err               error
+	// Refused 标识本用例运行时系统是否拒答。
+	Refused bool
+	Passed  bool
+	Err     error
 }
 
 // EvalSummary 汇总一批评测结果。
@@ -42,6 +47,9 @@ type EvalSummary struct {
 	CitationPrecision float64
 	Groundedness      float64
 	AnswerMatchRate   float64
+	// RefusalAccuracy 是期望拒答用例中被正确拒答的比例；
+	// 当没有期望拒答用例时定为 1.0。
+	RefusalAccuracy float64
 }
 
 // StructuredEvalCase 定义一次结构化输出评测用例。
@@ -85,6 +93,7 @@ type EvalThresholds struct {
 	MinGroundedness              float64
 	MinAnswerMatchRate           float64
 	MinStructuredOutputValidRate float64
+	MinRefusalAccuracy           float64
 	MaxFailures                  int
 }
 
@@ -100,6 +109,7 @@ type evalResultJSON struct {
 	CitationPrecision float64    `json:"citation_precision"`
 	Groundedness      float64    `json:"groundedness"`
 	AnswerMatch       bool       `json:"answer_match"`
+	Refused           bool       `json:"refused,omitempty"`
 	Passed            bool       `json:"passed"`
 	Err               string     `json:"err,omitempty"`
 }
@@ -119,10 +129,21 @@ type evalReportJSON struct {
 	StructuredResults []structuredResultJSON `json:"structured_results"`
 }
 
+// isRefusalError 判定一个问答错误是否属于系统拒答（证据不足或工具调用受限）。
+func isRefusalError(err error) bool {
+	return errors.Is(err, ErrEvidenceInsufficient) || errors.Is(err, ErrToolCallLimitExceeded)
+}
+
 // RunEvalSuite 执行一组同步问答评测。
+//
+// 对于标注 ExpectRefusal 的用例，通过条件为"系统实际拒答"，不计入
+// recall/precision/groundedness/answer-match 的均值；其余用例沿用既有判定。
 func RunEvalSuite(ctx context.Context, agent *Agent, cases []EvalCase) (EvalSummary, []EvalResult, error) {
 	results := make([]EvalResult, 0, len(cases))
 	summary := EvalSummary{TotalCases: len(cases)}
+	answerableCount := 0
+	refusalExpectedCount := 0
+	refusalCorrect := 0
 	for _, c := range cases {
 		result := EvalResult{Name: c.Name}
 		if agent == nil {
@@ -134,30 +155,47 @@ func RunEvalSuite(ctx context.Context, agent *Agent, cases []EvalCase) (EvalSumm
 		answer, err := session.AskWithOptions(ctx, c.Query, c.Options)
 		result.Answer = answer
 		result.Err = err
-		if err == nil {
-			result.RetrievalRecall = scoreRecall(answer.Citations, c.WantCitationSources)
-			result.CitationPrecision = scorePrecision(answer.Citations, c.WantCitationSources)
-			result.Groundedness = scoreGroundedness(answer.Text, c.WantGroundedSubstrings)
-			result.AnswerMatch = containsAll(answer.Text, c.WantAnswerContains)
-			result.Passed = result.RetrievalRecall >= 1 && result.CitationPrecision >= 1 && result.Groundedness >= 1 && result.AnswerMatch
+		result.Refused = isRefusalError(err)
+
+		if c.ExpectRefusal {
+			refusalExpectedCount++
+			result.Passed = result.Refused
+			if result.Passed {
+				refusalCorrect++
+			}
+		} else {
+			answerableCount++
+			if err == nil {
+				result.RetrievalRecall = scoreRecall(answer.Citations, c.WantCitationSources)
+				result.CitationPrecision = scorePrecision(answer.Citations, c.WantCitationSources)
+				result.Groundedness = scoreGroundedness(answer.Text, c.WantGroundedSubstrings)
+				result.AnswerMatch = containsAll(answer.Text, c.WantAnswerContains)
+				result.Passed = result.RetrievalRecall >= 1 && result.CitationPrecision >= 1 && result.Groundedness >= 1 && result.AnswerMatch
+			}
+			summary.RetrievalRecall += result.RetrievalRecall
+			summary.CitationPrecision += result.CitationPrecision
+			summary.Groundedness += result.Groundedness
+			if result.AnswerMatch {
+				summary.AnswerMatchRate++
+			}
 		}
+
 		if result.Passed {
 			summary.PassedCases++
 		}
-		summary.RetrievalRecall += result.RetrievalRecall
-		summary.CitationPrecision += result.CitationPrecision
-		summary.Groundedness += result.Groundedness
-		if result.AnswerMatch {
-			summary.AnswerMatchRate++
-		}
 		results = append(results, result)
 	}
-	if len(cases) > 0 {
-		n := float64(len(cases))
+	if answerableCount > 0 {
+		n := float64(answerableCount)
 		summary.RetrievalRecall /= n
 		summary.CitationPrecision /= n
 		summary.Groundedness /= n
 		summary.AnswerMatchRate /= n
+	}
+	if refusalExpectedCount > 0 {
+		summary.RefusalAccuracy = float64(refusalCorrect) / float64(refusalExpectedCount)
+	} else {
+		summary.RefusalAccuracy = 1
 	}
 	return summary, results, nil
 }
@@ -254,6 +292,7 @@ func newEvalReportJSON(report EvalReport) evalReportJSON {
 			CitationPrecision: result.CitationPrecision,
 			Groundedness:      result.Groundedness,
 			AnswerMatch:       result.AnswerMatch,
+			Refused:           result.Refused,
 			Passed:            result.Passed,
 			Err:               errString(result.Err),
 		})
@@ -288,6 +327,7 @@ func (payload evalReportJSON) toReport() EvalReport {
 			CitationPrecision: result.CitationPrecision,
 			Groundedness:      result.Groundedness,
 			AnswerMatch:       result.AnswerMatch,
+			Refused:           result.Refused,
 			Passed:            result.Passed,
 			Err:               stringToError(result.Err),
 		})
@@ -334,6 +374,9 @@ func CheckEvalThresholds(report EvalReport, thresholds EvalThresholds) error {
 	if report.StructuredSummary.StructuredOutputValidRate < thresholds.MinStructuredOutputValidRate {
 		return fmt.Errorf("structured output valid rate %.3f is below min %.3f", report.StructuredSummary.StructuredOutputValidRate, thresholds.MinStructuredOutputValidRate)
 	}
+	if report.Summary.RefusalAccuracy < thresholds.MinRefusalAccuracy {
+		return fmt.Errorf("refusal accuracy %.3f is below min %.3f", report.Summary.RefusalAccuracy, thresholds.MinRefusalAccuracy)
+	}
 	return nil
 }
 
@@ -345,6 +388,7 @@ func CompareEvalReportWithBaseline(report EvalReport, baseline EvalReport) error
 		MinGroundedness:              baseline.Summary.Groundedness,
 		MinAnswerMatchRate:           baseline.Summary.AnswerMatchRate,
 		MinStructuredOutputValidRate: baseline.StructuredSummary.StructuredOutputValidRate,
+		MinRefusalAccuracy:           baseline.Summary.RefusalAccuracy,
 		MaxFailures:                  baseline.Summary.TotalCases - baseline.Summary.PassedCases,
 	})
 }

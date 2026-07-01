@@ -7,9 +7,8 @@ import (
 	"strings"
 	"time"
 
+	llmprovider "github.com/gtkit/go-llm-provider/v2/provider"
 	"github.com/pkoukk/tiktoken-go"
-	langllms "github.com/tmc/langchaingo/llms"
-	openailllm "github.com/tmc/langchaingo/llms/openai"
 
 	"github.com/gtkit/go-rag-agent/internal/llm"
 	"github.com/gtkit/go-rag-agent/internal/websearch"
@@ -372,15 +371,14 @@ func classifyProviderError(err error, providerName string) string {
 	}
 	switch providerName {
 	case "openai":
-		mapped := openailllm.MapError(err)
 		switch {
-		case errors.Is(mapped, langllms.ErrRateLimit):
+		case errors.Is(err, llmprovider.ErrRateLimit):
 			return providerErrorClassRateLimit
-		case errors.Is(mapped, langllms.ErrAuthentication):
+		case errors.Is(err, llmprovider.ErrAuth):
 			return providerErrorClassAuth
-		case errors.Is(mapped, langllms.ErrTimeout), errors.Is(mapped, langllms.ErrProviderUnavailable):
+		case errors.Is(err, llmprovider.ErrTimeout), errors.Is(err, llmprovider.ErrServerError), errors.Is(err, llmprovider.ErrNetwork):
 			return providerErrorClassTransient
-		case errors.Is(mapped, langllms.ErrInvalidRequest), errors.Is(mapped, langllms.ErrTokenLimit):
+		case errors.Is(err, llmprovider.ErrInvalidRequest), errors.Is(err, llmprovider.ErrContextLength):
 			return providerErrorClassPermanent
 		}
 	}

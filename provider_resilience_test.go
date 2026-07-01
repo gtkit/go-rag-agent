@@ -3,9 +3,11 @@ package ragagent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	llmprovider "github.com/gtkit/go-llm-provider/v2/provider"
 	"github.com/gtkit/go-rag-agent/internal/llm"
 	"github.com/gtkit/go-rag-agent/internal/websearch"
 )
@@ -327,6 +329,16 @@ func TestProviderErrorClassificationAndRetry(t *testing.T) {
 		{name: "transient text", err: errors.New("connection reset by peer"), wantClass: providerErrorClassTransient, wantRetry: true},
 		{name: "permanent text", err: errors.New("400 invalid request"), wantClass: providerErrorClassPermanent, wantRetry: false},
 		{name: "unknown text", err: errors.New("provider exploded"), wantClass: providerErrorClassUnknown, wantRetry: false},
+		// go-llm-provider/v2 ProviderError 分类（openai 分支）。
+		{name: "v2 rate limit", err: &llmprovider.ProviderError{Provider: llmprovider.ProviderOpenAI, Code: llmprovider.ErrorCodeRateLimit}, provider: "openai", wantClass: providerErrorClassRateLimit, wantRetry: true},
+		{name: "v2 auth", err: &llmprovider.ProviderError{Provider: llmprovider.ProviderOpenAI, Code: llmprovider.ErrorCodeAuth}, provider: "openai", wantClass: providerErrorClassAuth, wantRetry: false},
+		{name: "v2 timeout", err: &llmprovider.ProviderError{Provider: llmprovider.ProviderOpenAI, Code: llmprovider.ErrorCodeTimeout}, provider: "openai", wantClass: providerErrorClassTransient, wantRetry: true},
+		{name: "v2 server error", err: &llmprovider.ProviderError{Provider: llmprovider.ProviderOpenAI, Code: llmprovider.ErrorCodeServerError}, provider: "openai", wantClass: providerErrorClassTransient, wantRetry: true},
+		{name: "v2 network", err: &llmprovider.ProviderError{Provider: llmprovider.ProviderOpenAI, Code: llmprovider.ErrorCodeNetwork}, provider: "openai", wantClass: providerErrorClassTransient, wantRetry: true},
+		{name: "v2 invalid request", err: &llmprovider.ProviderError{Provider: llmprovider.ProviderOpenAI, Code: llmprovider.ErrorCodeInvalidRequest}, provider: "openai", wantClass: providerErrorClassPermanent, wantRetry: false},
+		{name: "v2 context length", err: &llmprovider.ProviderError{Provider: llmprovider.ProviderOpenAI, Code: llmprovider.ErrorCodeContextLength}, provider: "openai", wantClass: providerErrorClassPermanent, wantRetry: false},
+		// 包装后仍能通过 errors.Is 正确分类。
+		{name: "v2 wrapped rate limit", err: fmt.Errorf("generate content: %w", &llmprovider.ProviderError{Provider: llmprovider.ProviderOpenAI, Code: llmprovider.ErrorCodeRateLimit}), provider: "openai", wantClass: providerErrorClassRateLimit, wantRetry: true},
 	}
 
 	for _, tt := range tests {

@@ -5,33 +5,28 @@ import (
 	"fmt"
 	"net/http"
 
-	lcembeddings "github.com/tmc/langchaingo/embeddings"
-	lcopenai "github.com/tmc/langchaingo/llms/openai"
+	provider "github.com/gtkit/go-llm-provider/v2/provider"
 )
 
-// OpenAIEmbedder 将 LangChainGo OpenAI Embedder 适配到当前包的 Embedder 接口。
+// OpenAIEmbedder 将 go-llm-provider 的 OpenAI 兼容 Embedder 适配到当前包的 Embedder 接口。
 type OpenAIEmbedder struct {
-	client *lcembeddings.EmbedderImpl
+	client provider.Embedder
 }
 
-// NewOpenAIEmbedder 创建一个 OpenAI-compatible embedding 适配器。
+// NewOpenAIEmbedder 创建一个 OpenAI-compatible embedding 适配器，底层由 go-llm-provider/v2 驱动。
 func NewOpenAIEmbedder(_ context.Context, cfg EmbeddingConfig) (Embedder, error) {
 	cfg = cfg.normalized()
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate embedding config: %w", err)
 	}
 
-	openaiClient, err := lcopenai.New(
-		lcopenai.WithBaseURL(cfg.BaseURL),
-		lcopenai.WithToken(cfg.APIKey),
-		lcopenai.WithEmbeddingModel(cfg.Model),
-		lcopenai.WithHTTPClient(&http.Client{Timeout: cfg.Timeout}),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("new openai embedding client: %w", err)
-	}
-
-	client, err := lcembeddings.NewEmbedder(openaiClient)
+	client, err := provider.NewEmbedder(provider.EmbedderConfig{
+		Name:       provider.ProviderOpenAI,
+		BaseURL:    cfg.BaseURL,
+		APIKey:     cfg.APIKey,
+		Model:      cfg.Model,
+		HTTPClient: &http.Client{Timeout: cfg.Timeout},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("new openai embedder: %w", err)
 	}
@@ -50,30 +45,9 @@ func (e *OpenAIEmbedder) EmbedTexts(ctx context.Context, texts []string) ([][]fl
 		return nil, fmt.Errorf("openai embedder is nil")
 	}
 
-	rows, err := e.client.EmbedDocuments(ctx, normalizedTexts)
+	rows, err := provider.EmbedBatch(ctx, e.client, normalizedTexts)
 	if err != nil {
 		return nil, fmt.Errorf("embed texts: %w", err)
 	}
 	return rows, nil
-}
-
-func convertEmbeddingRows(rows [][]float64) [][]float32 {
-	if rows == nil {
-		return nil
-	}
-
-	converted := make([][]float32, 0, len(rows))
-	for _, row := range rows {
-		if row == nil {
-			converted = append(converted, nil)
-			continue
-		}
-
-		vector := make([]float32, len(row))
-		for i, value := range row {
-			vector[i] = float32(value)
-		}
-		converted = append(converted, vector)
-	}
-	return converted
 }

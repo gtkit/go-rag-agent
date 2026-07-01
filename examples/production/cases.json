@@ -1,0 +1,42 @@
+{
+  "description": "电商客服 RAG 业务级评测集。category 仅作覆盖标注，不参与判定；expect_refusal 决定通过条件。want_citations 为知识文件 basename，加载时与导入目录拼接。",
+  "cases": [
+    {"name": "ans-shipping-time", "category": "answerable", "query": "标准配送一般几天能到？", "want_citations": ["shipping.md"], "want_contains": ["工作日"], "want_grounded": ["3 到 5 个工作日"]},
+    {"name": "ans-free-shipping-threshold", "category": "answerable", "query": "满多少钱可以包邮？", "want_citations": ["shipping.md"], "want_contains": ["99"], "want_grounded": ["满 99 元包邮"]},
+    {"name": "ans-remote-area", "category": "answerable", "query": "偏远地区配送要多久？", "want_citations": ["shipping.md"], "want_grounded": ["7 到 10 个工作日"]},
+    {"name": "ans-return-window", "category": "answerable", "query": "支持几天无理由退货？", "want_citations": ["return.md"], "want_contains": ["7 天"], "want_grounded": ["7 天无理由退货"]},
+    {"name": "ans-return-shipping-fee", "category": "answerable", "query": "质量问题退货运费谁出？", "want_citations": ["return.md"], "want_grounded": ["商家承担"]},
+    {"name": "ans-refund-time", "category": "answerable", "query": "退款多久到账？", "want_citations": ["return.md"], "want_grounded": ["3 个工作日"]},
+    {"name": "ans-member-free-shipping", "category": "answerable", "query": "哪个会员等级免运费？", "want_citations": ["membership.md"], "want_grounded": ["金卡及以上"]},
+    {"name": "ans-points-rule", "category": "answerable", "query": "积分怎么抵钱？", "want_citations": ["membership.md"], "want_grounded": ["100 积分可抵扣 1 元"]},
+    {"name": "ans-payment-methods", "category": "answerable", "query": "你们支持哪些支付方式？", "want_citations": ["payment.md"], "want_grounded": ["支付宝", "微信", "银行卡"]},
+    {"name": "ans-invoice-window", "category": "answerable", "query": "发票最晚什么时候申请？", "want_citations": ["payment.md"], "want_grounded": ["30 天内"]},
+    {"name": "ans-warranty-period", "category": "answerable", "query": "电子产品保修多久？", "want_citations": ["warranty.md"], "want_grounded": ["1 年"]},
+    {"name": "ans-warranty-scope", "category": "answerable", "query": "进水了还能保修吗？", "want_citations": ["warranty.md"], "want_grounded": ["人为损坏"]},
+
+    {"name": "unans-weather", "category": "unanswerable", "query": "明天本地天气怎么样？", "expect_refusal": true},
+    {"name": "unans-ceo", "category": "unanswerable", "query": "你们公司 CEO 是谁？", "expect_refusal": true},
+    {"name": "unans-stock-price", "category": "unanswerable", "query": "你们的股票今天涨了吗？", "expect_refusal": true},
+    {"name": "unans-recipe", "category": "unanswerable", "query": "红烧肉怎么做？", "expect_refusal": true},
+    {"name": "unans-translation", "category": "unanswerable", "query": "帮我把这段中文翻译成法语。", "expect_refusal": true},
+    {"name": "unans-competitor", "category": "unanswerable", "query": "竞争对手的退货政策是什么？", "expect_refusal": true},
+    {"name": "unans-internal-salary", "category": "unanswerable", "query": "你们仓库员工工资多少？", "expect_refusal": true},
+    {"name": "unans-coupon-code", "category": "unanswerable", "query": "给我一个内部优惠券码。", "expect_refusal": true},
+
+    {"name": "lowsim-car-parts", "category": "low_similarity", "query": "你们卖不卖汽车发动机配件？", "expect_refusal": true},
+    {"name": "lowsim-overseas-tax", "category": "low_similarity", "query": "海外直邮的关税怎么算？", "expect_refusal": true},
+    {"name": "lowsim-installment", "category": "low_similarity", "query": "支持花呗分期 24 期免息吗？", "expect_refusal": true},
+    {"name": "lowsim-offline-store", "category": "low_similarity", "query": "你们有线下实体门店吗？", "expect_refusal": true},
+    {"name": "lowsim-bulk-wholesale", "category": "low_similarity", "query": "你们提供企业团购批发价吗？", "expect_refusal": true},
+
+    {"name": "conflict-shipping-vs-member", "category": "citation_conflict", "query": "我是金卡会员但订单没满 99，到底要不要运费？", "want_citations": ["membership.md", "shipping.md"], "want_grounded": ["金卡及以上"]},
+    {"name": "conflict-return-personal-care", "category": "citation_conflict", "query": "拆封的个人护理商品能 7 天无理由退货吗？", "want_citations": ["return.md"], "want_grounded": ["不支持无理由退货"]},
+    {"name": "conflict-warranty-with-return", "category": "citation_conflict", "query": "电子产品坏了应该走退货还是走保修？", "want_citations": ["return.md", "warranty.md"]},
+    {"name": "conflict-points-vs-shipping", "category": "citation_conflict", "query": "积分能不能直接抵扣运费？", "want_citations": ["membership.md"]},
+
+    {"name": "tool-order-status", "category": "tool_failure", "query": "订单 NO-9999 现在到哪了？", "expect_refusal": true},
+    {"name": "tool-order-refund", "category": "tool_failure", "query": "帮我查订单 NO-8888 的退款进度。", "expect_refusal": true},
+    {"name": "tool-order-address", "category": "tool_failure", "query": "订单 NO-7777 寄到哪个地址？", "expect_refusal": true},
+    {"name": "tool-order-items", "category": "tool_failure", "query": "订单 NO-6666 里都买了什么？", "expect_refusal": true}
+  ]
+}

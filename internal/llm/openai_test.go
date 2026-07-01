@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	lcllms "github.com/tmc/langchaingo/llms"
+	provider "github.com/gtkit/go-llm-provider/v2/provider"
 )
 
 func TestChatConfigValidate(t *testing.T) {
@@ -395,66 +395,6 @@ func TestOpenAIEmbedderEmbedTextsFailFastValidation(t *testing.T) {
 	}
 }
 
-func TestConvertEmbeddingRows(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		input [][]float64
-		want  [][]float32
-	}{
-		{
-			name: "converts each value",
-			input: [][]float64{
-				{1.5, -2.25, 0},
-				{3.125},
-			},
-			want: [][]float32{
-				{1.5, -2.25, 0},
-				{3.125},
-			},
-		},
-		{
-			name:  "empty rows",
-			input: [][]float64{},
-			want:  [][]float32{},
-		},
-		{
-			name:  "nil rows",
-			input: nil,
-			want:  nil,
-		},
-		{
-			name:  "nil row",
-			input: [][]float64{nil},
-			want:  [][]float32{nil},
-		},
-	}
-
-	for _, tc := range tests {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := convertEmbeddingRows(tc.input)
-			if len(got) != len(tc.want) {
-				t.Fatalf("len(convertEmbeddingRows()) = %d, want %d", len(got), len(tc.want))
-			}
-
-			for i := range tc.want {
-				if len(got[i]) != len(tc.want[i]) {
-					t.Fatalf("len(row %d) = %d, want %d", i, len(got[i]), len(tc.want[i]))
-				}
-				for j := range tc.want[i] {
-					if got[i][j] != tc.want[i][j] {
-						t.Fatalf("value[%d][%d] = %v, want %v", i, j, got[i][j], tc.want[i][j])
-					}
-				}
-			}
-		})
-	}
-}
-
 func TestOpenAIChatModelFailFastAndMessageConversion(t *testing.T) {
 	t.Parallel()
 
@@ -500,18 +440,22 @@ func TestOpenAIChatModelFailFastAndMessageConversion(t *testing.T) {
 		})
 	}
 
-	msgs := toLangChainMessages([]Message{
+	msgs := toProviderMessages([]Message{
 		{Role: RoleSystem, Content: "system"},
 		{Role: RoleAssistant, Content: "assistant"},
 		{Role: RoleUser, Content: "user"},
 		{Role: Role("custom"), Content: "custom"},
 	})
 	if len(msgs) != 4 {
-		t.Fatalf("len(toLangChainMessages()) = %d, want 4", len(msgs))
+		t.Fatalf("len(toProviderMessages()) = %d, want 4", len(msgs))
 	}
+	wantRoles := []provider.Role{provider.RoleSystem, provider.RoleAssistant, provider.RoleUser, provider.RoleUser}
 	for i, want := range []string{"system", "assistant", "user", "custom"} {
-		if got := msgs[i].Parts[0].(lcllms.TextContent).Text; got != want {
-			t.Fatalf("message[%d] text = %q, want %q", i, got, want)
+		if len(msgs[i].Content) != 1 || msgs[i].Content[0].Text != want {
+			t.Fatalf("message[%d] text = %+v, want %q", i, msgs[i].Content, want)
+		}
+		if msgs[i].Role != wantRoles[i] {
+			t.Fatalf("message[%d] role = %q, want %q", i, msgs[i].Role, wantRoles[i])
 		}
 	}
 }
@@ -558,5 +502,108 @@ func TestOpenAIConstructorsCreateClients(t *testing.T) {
 	}
 	if embedder == nil {
 		t.Fatal("NewOpenAIEmbedder() = nil, want embedder")
+	}
+}
+
+// fakeOpenAIServer 返回一个最小的 OpenAI 兼容服务，覆盖 chat（流式/非流式）与 embedding。
+func fakeOpenAIServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		if strings.Contains(string(buf), "\"stream\":true") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+			for _, delta := range []string{"你好", "，世界"} {
+				_, _ = w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"" + delta + "\"}}]}\n\n"))
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"你好，世界"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`))
+	})
+	mux.HandleFunc("/embeddings", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","model":"test-embedding","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3]},{"object":"embedding","index":1,"embedding":[0.4,0.5,0.6]}],"usage":{"prompt_tokens":4,"total_tokens":4}}`))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestOpenAIChatModelGenerateMapsContentAndUsage(t *testing.T) {
+	t.Parallel()
+
+	server := fakeOpenAIServer(t)
+	model, err := NewOpenAIChatModel(context.Background(), ChatConfig{
+		Model: "test-chat", BaseURL: server.URL, APIKey: "k", Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIChatModel() error = %v", err)
+	}
+
+	msg, err := model.Generate(context.Background(), []Message{{Role: RoleUser, Content: "hi"}})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if msg.Role != RoleAssistant || msg.Content != "你好，世界" {
+		t.Fatalf("Generate() msg = %+v, want assistant 你好，世界", msg)
+	}
+	if got := msg.GenerationInfo["TotalTokens"]; got != 15 {
+		t.Fatalf("GenerationInfo[TotalTokens] = %v, want 15", got)
+	}
+	if got := msg.GenerationInfo["PromptTokens"]; got != 10 {
+		t.Fatalf("GenerationInfo[PromptTokens] = %v, want 10", got)
+	}
+}
+
+func TestOpenAIChatModelStreamEmitsDeltas(t *testing.T) {
+	t.Parallel()
+
+	server := fakeOpenAIServer(t)
+	model, err := NewOpenAIChatModel(context.Background(), ChatConfig{
+		Model: "test-chat", BaseURL: server.URL, APIKey: "k", Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIChatModel() error = %v", err)
+	}
+
+	var sb strings.Builder
+	if err := model.Stream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, func(chunk string) error {
+		sb.WriteString(chunk)
+		return nil
+	}); err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	if sb.String() != "你好，世界" {
+		t.Fatalf("Stream() concatenated = %q, want 你好，世界", sb.String())
+	}
+}
+
+func TestOpenAIEmbedderEmbedTextsReturnsVectors(t *testing.T) {
+	t.Parallel()
+
+	server := fakeOpenAIServer(t)
+	embedder, err := NewOpenAIEmbedder(context.Background(), EmbeddingConfig{
+		Model: "test-embedding", BaseURL: server.URL, APIKey: "k", Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIEmbedder() error = %v", err)
+	}
+
+	rows, err := embedder.EmbedTexts(context.Background(), []string{"a", "b"})
+	if err != nil {
+		t.Fatalf("EmbedTexts() error = %v", err)
+	}
+	if len(rows) != 2 || len(rows[0]) != 3 {
+		t.Fatalf("EmbedTexts() shape = %dx?, want 2x3", len(rows))
+	}
+	if rows[1][0] != 0.4 {
+		t.Fatalf("rows[1][0] = %v, want 0.4", rows[1][0])
 	}
 }

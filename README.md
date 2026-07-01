@@ -24,6 +24,10 @@
 - 最小接入：[`examples/basic/main.go`](examples/basic/main.go)
 - 服务内嵌：[`examples/service/main.go`](examples/service/main.go)
 - pgvector 部署：[`examples/pgvector/main.go`](examples/pgvector/main.go)
+- 端到端实战 demo（导入 → 评测 → 报告 → trace 查询 → 只读工具 → 多租户隔离）：[`examples/production/main.go`](examples/production/main.go)
+  - 业务级评测集 fixtures：[`examples/production/cases.json`](examples/production/cases.json) + 知识库 [`examples/production/knowledge/`](examples/production/knowledge)
+  - 只读订单业务工具：[`examples/production/ordertool.go`](examples/production/ordertool.go)
+  - 多租户隔离 demo：[`examples/production/multitenant.go`](examples/production/multitenant.go)
 - benchmark / eval 基线：[`docs/baselines/sdk-positioning.md`](docs/baselines/sdk-positioning.md)
 
 ## API 稳定性分层
@@ -111,6 +115,105 @@ func main() {
 	fmt.Println(answer.Text)
 }
 ```
+
+## 执行时序
+
+以下时序图覆盖问答、拒答、工具调用与多租户检索四条主路径，步骤与 `agent.go` 的实际调用顺序一致。
+
+### 同步问答（成功）
+
+```mermaid
+sequenceDiagram
+    participant Caller as 调用方
+    participant Session
+    participant Agent as Agent(askWithFormatLocked)
+    participant Boundary as AccessBoundary
+    participant Retriever
+    participant Store as VectorStore
+    participant Model as ChatModel(runner)
+    participant Trace as TraceRecorder/TraceStore
+
+    Caller->>Session: Ask / AskWithOptions(query)
+    Session->>Agent: askWithFormatLocked(query, opts)
+    Agent->>Boundary: applyToRetrieval(filter, scope)
+    Boundary-->>Agent: 受约束的检索 filter
+    Agent->>Retriever: SearchDetailed(query, filter)
+    Retriever->>Store: SearchWithFilter(embedding, topK, threshold)
+    Store-->>Retriever: hits
+    Retriever-->>Agent: hits + RetrievalMetrics
+    Agent->>Agent: AssembleContext(hits) 得到 evidence
+    Agent->>Model: Ask(query, evidence, history, memory)
+    Model-->>Agent: answerText
+    Agent->>Agent: citationsFromHits(hits)
+    Agent->>Trace: recordExecutionTrace(success, citations)
+    Agent-->>Caller: Answer{Text, Citations, Trace}
+```
+
+### 证据不足拒答
+
+```mermaid
+sequenceDiagram
+    participant Caller as 调用方
+    participant Agent as Agent(askWithFormatLocked)
+    participant Retriever
+    participant Trace as TraceRecorder/TraceStore
+
+    Caller->>Agent: Ask(无相关证据的问题)
+    Agent->>Retriever: SearchDetailed(query, filter)
+    Retriever-->>Agent: 无可用证据 (ErrEvidenceInsufficient)
+    Note over Agent: 无 fallback 工具时进入拒答
+    Agent->>Agent: classifyEvidenceRefusal(metrics)
+    Note right of Agent: RawCandidateCount>0 → 低相似度<br/>否则 → 无证据
+    Agent->>Agent: trace.setRefusal(reason)
+    Agent->>Trace: recordExecutionTrace(Refused=true, RefusalReason)
+    Agent-->>Caller: error: ErrEvidenceInsufficient
+```
+
+### 工具调用（fallback 工具链）
+
+```mermaid
+sequenceDiagram
+    participant Agent as Agent(askWithFormatLocked)
+    participant Retriever
+    participant Runner as ToolCalling runner
+    participant Tool as 注册的 Tool
+    participant Model as ChatModel
+
+    Agent->>Retriever: SearchDetailed(query, filter)
+    Retriever-->>Agent: 本地证据不足
+    Note over Agent: 存在 fallback 工具 → 清空本地证据，转工具链
+    Agent->>Runner: Ask(query, ToolRegistry, ToolCallLimiter)
+    Runner->>Model: 请求（含工具描述）
+    Model-->>Runner: 请求调用某工具
+    Runner->>Tool: Run(args)
+    Tool-->>Runner: 工具结果（如联网搜索来源）
+    Runner->>Model: 回填工具结果继续生成
+    Model-->>Runner: answerText
+    Note over Runner: 超过 MaxToolCalls 则返回 ErrToolCallLimitExceeded<br/>→ trace.setRefusal(RefusalToolFailure)
+    Runner-->>Agent: answerText / error
+```
+
+### 多租户检索（数据面隔离）
+
+```mermaid
+sequenceDiagram
+    participant Caller as 调用方(已认证租户)
+    participant Session as Session(tenant:bizID)
+    participant Agent
+    participant Boundary as AccessBoundary
+    participant Store as VectorStore
+
+    Caller->>Session: AskWithOptions(query, Filter.SourcePrefixes=[租户前缀], MemoryScope.Tenant)
+    Session->>Agent: askWithFormatLocked
+    Agent->>Boundary: applyToRetrieval(filter, scope)
+    Note over Boundary: 注入 Namespace metadata<br/>对 AllowedSourcePrefixes 取交集
+    Boundary-->>Agent: 仅含本租户前缀的 filter
+    Agent->>Store: SearchWithFilter(仅匹配本租户前缀)
+    Store-->>Agent: 仅本租户 hits
+    Agent-->>Caller: Answer（citation 只来自本租户）
+```
+
+> 注意：`SessionID` 是全局平坦命名空间，库不替你按租户隔离会话历史，需由接入侧命名空间化（见下文「多租户接入与隔离边界」）。
 
 ## 配置说明
 
@@ -477,6 +580,33 @@ cfg := ragagent.Config{
 - 动态 policy 可以在检索时收敛 `RetrievalFilter`
 - 静态 `Namespace` / `AllowedSourcePaths` / `AllowedSourcePrefixes` 仍然是最终上界
 
+## 多租户接入与隔离边界
+
+库已经提供多租户**数据面隔离**所需的原语，多租户接入是"把已认证身份喂进这些原语"，而不是从零实现：
+
+| 维度 | 库提供的机制 | 强制点 |
+|------|------------|--------|
+| 会话历史隔离 | `Session` 按 `SessionID` 分，各自管理 history | 物理分开 |
+| 记忆隔离 | `MemoryScope{Tenant, UserID}`，长期记忆按 scope 过滤 | 检索时按 tenant 过滤 |
+| 检索隔离 | `AccessBoundaryConfig.Namespace` 注入 metadata、`AllowedSourcePrefixes` 取交集 | 在库内强制 |
+| 导入打标 | 导入时给文件盖 namespace metadata | 自动 |
+
+落在接入侧（库故意不碰）：身份认证、把身份绑定到 `SessionID`/`MemoryScope`/`AccessBoundary`、授权与限流。
+
+可运行示例见 [`examples/production/multitenant.go`](examples/production/multitenant.go)。
+
+### 两个必须由接入侧处理的 footgun
+
+1. **`SessionID` 是全局平坦命名空间。** `GetSession("order-123")` 不带租户维度，两个租户都用同一个 id 会撞进同一会话、共享历史。接入侧必须命名空间化，例如 `tenantID + ":" + bizID`：
+
+   ```go
+   func namespacedSessionID(tenant, bizID string) string { return tenant + ":" + bizID }
+   ```
+
+2. **库做的是"逻辑隔离"（metadata / source 过滤），不是"物理隔离"。** 所有租户的向量可能共处同一存储，靠 filter 分开即可满足绝大多数业务；若合规要求租户数据绝不共表 / 共索引，需通过 `StorageComponents` 为每租户注入独立存储。
+
+> 多租户的"控制面"（开户 / 销户、租户级配置下发、用量看板、管理 API）不在本库范围内——那属于业务平台职责，本库坚持库优先、非平台定位。
+
 ## Eval Runner
 
 当前库支持根包 deterministic eval runner：
@@ -496,6 +626,23 @@ _ = summary
 _ = results
 _ = err
 ```
+
+### 拒答评测
+
+不可回答类问题用 `ExpectRefusal` 标注，通过条件变为"系统实际拒答"，并计入汇总的 `RefusalAccuracy`（无期望拒答用例时定为 1.0）：
+
+```go
+summary, results, _ := ragagent.RunEvalSuite(ctx, agent, []ragagent.EvalCase{
+	// 可回答用例：标注期望引用
+	{Name: "answerable", Query: "标准配送几天到？", WantCitationSources: []string{knowledgeDir + "/shipping.md"}},
+	// 不可回答用例：标注期望拒答
+	{Name: "unanswerable", Query: "明天天气怎么样？", ExpectRefusal: true},
+})
+fmt.Printf("拒答正确率=%.2f\n", summary.RefusalAccuracy)
+_ = results
+```
+
+`EvalThresholds.MinRefusalAccuracy` 可作为门禁阈值。覆盖五类失败模式（可回答 / 不可回答 / 低相似度 / 引用冲突 / 工具失败）的业务级评测集 fixtures 见 [`examples/production/cases.json`](examples/production/cases.json)。
 
 结构化输出评测：
 
@@ -1292,11 +1439,12 @@ trace 当前包含：
 - 原始 query 与 rewrite 后 query
 - 检索过滤条件
 - tool 调用摘要
-- `RetrievalMetrics`
+- `RetrievalMetrics`（含阈值过滤前候选数 `RawCandidateCount`）
 - `ModelMetrics`
 - fallback 事件
 - citation 列表
 - 成功 / 失败终态与总耗时
+- 拒答标识 `Refused` 与结构化拒答原因 `RefusalReason`
 
 同步示例：
 
@@ -1375,6 +1523,39 @@ cfg := ragagent.Config{
 ```
 
 如果你希望输出日志摘要，可以配置 `Config.Logger`。库不会自己初始化日志实例；未提供 logger 时保持 no-op。
+
+### 拒答原因分类
+
+每次因证据不足而拒答的执行，trace 会带上结构化原因 `RefusalReason`：
+
+| 取值 | 含义 |
+|------|------|
+| `RefusalNone` | 未拒答（零值） |
+| `RefusalNoEvidence` | 检索无可用证据 |
+| `RefusalLowSimilarity` | 检索到候选但相似度均低于阈值（仅在能观测过滤前候选的路径，如 hybrid，被单独识别） |
+| `RefusalCitationConflict` | 证据冲突（保留供调用方 / 评测标注，runtime 不自动判定） |
+| `RefusalToolFailure` | fallback 工具受限或失败（如超过 `MaxToolCalls`） |
+
+> 说明：默认 vector-only 检索下，被相似度阈值过滤掉的候选在 store 内部即被丢弃、不可观测，因此会保守归类为 `RefusalNoEvidence`。
+
+### 可查询持久化 trace store
+
+`InMemoryTraceStore` 既实现 `TraceRecorder` 接收 trace，又支持按 session / 最终状态 / 时间窗查询，字段含 query 摘要、tool call、latency、token、cost、citations、拒答原因：
+
+```go
+store := ragagent.NewInMemoryTraceStore(1024) // 容量上限，超出 FIFO 淘汰
+cfg := ragagent.Config{TraceRecorder: store}
+// ... 运行若干问答后
+
+refused, _ := store.Query(ctx, ragagent.TraceQuery{Status: ragagent.TraceStatusRefused})
+for _, tr := range refused {
+	log.Printf("拒答: %s 原因=%s", tr.QuerySummary, tr.RefusalReason)
+}
+recent, _ := store.Query(ctx, ragagent.TraceQuery{SessionID: "demo", Limit: 10})
+_ = recent
+```
+
+需要跨进程持久化时，自行实现 `TraceStore` 接口接你的数据库；库只内置内存实现，不绑定特定后端（守住非平台定位）。
 
 ## Provider 治理与 usage/cost 聚合
 

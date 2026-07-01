@@ -2,36 +2,39 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
-	lcllms "github.com/tmc/langchaingo/llms"
-	lcopenai "github.com/tmc/langchaingo/llms/openai"
+	provider "github.com/gtkit/go-llm-provider/v2/provider"
 )
 
-// OpenAIChatModel 将 LangChainGo OpenAI 模型适配到当前包的 ChatModel 接口。
+// OpenAIChatModel 将 go-llm-provider 的 OpenAI 兼容 Provider 适配到当前包的 ChatModel 接口。
 type OpenAIChatModel struct {
-	client *lcopenai.LLM
+	client provider.Provider
+	model  string
 }
 
-// NewOpenAIChatModel 创建一个 OpenAI-compatible 的 LangChainGo 聊天模型。
+// NewOpenAIChatModel 创建一个 OpenAI-compatible 的聊天模型，底层由 go-llm-provider/v2 驱动。
 func NewOpenAIChatModel(_ context.Context, cfg ChatConfig) (ChatModel, error) {
 	cfg = cfg.normalized()
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate chat config: %w", err)
 	}
 
-	client, err := lcopenai.New(
-		lcopenai.WithModel(cfg.Model),
-		lcopenai.WithBaseURL(cfg.BaseURL),
-		lcopenai.WithToken(cfg.APIKey),
-		lcopenai.WithHTTPClient(&http.Client{Timeout: cfg.Timeout}),
-	)
+	client, err := provider.NewProvider(provider.ProviderConfig{
+		Name:       provider.ProviderOpenAI,
+		BaseURL:    cfg.BaseURL,
+		APIKey:     cfg.APIKey,
+		Model:      cfg.Model,
+		HTTPClient: &http.Client{Timeout: cfg.Timeout},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("new openai chat model: %w", err)
 	}
 
-	return &OpenAIChatModel{client: client}, nil
+	return &OpenAIChatModel{client: client, model: cfg.Model}, nil
 }
 
 func (m *OpenAIChatModel) Generate(ctx context.Context, input []Message) (Message, error) {
@@ -39,18 +42,21 @@ func (m *OpenAIChatModel) Generate(ctx context.Context, input []Message) (Messag
 		return Message{}, fmt.Errorf("openai chat model is nil")
 	}
 
-	resp, err := m.client.GenerateContent(ctx, toLangChainMessages(input))
+	resp, err := m.client.Chat(ctx, &provider.ChatRequest{
+		Model:    m.model,
+		Messages: toProviderMessages(input),
+	})
 	if err != nil {
 		return Message{}, fmt.Errorf("generate content: %w", err)
 	}
-	if len(resp.Choices) == 0 || resp.Choices[0] == nil {
-		return Message{}, fmt.Errorf("generate content returned no choices")
+	if resp == nil {
+		return Message{}, fmt.Errorf("generate content returned no response")
 	}
 
 	return Message{
 		Role:           RoleAssistant,
-		Content:        resp.Choices[0].Content,
-		GenerationInfo: resp.Choices[0].GenerationInfo,
+		Content:        resp.Content,
+		GenerationInfo: usageGenerationInfo(resp.Usage),
 	}, nil
 }
 
@@ -62,34 +68,60 @@ func (m *OpenAIChatModel) Stream(ctx context.Context, input []Message, emit func
 		return fmt.Errorf("stream emitter is required")
 	}
 
-	_, err := m.client.GenerateContent(ctx, toLangChainMessages(input), lcllms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error {
-		if len(chunk) == 0 {
-			return nil
-		}
-		return emit(string(chunk))
-	}))
+	stream, err := m.client.ChatStream(ctx, &provider.ChatRequest{
+		Model:    m.model,
+		Messages: toProviderMessages(input),
+	})
 	if err != nil {
 		return fmt.Errorf("stream content: %w", err)
 	}
+	defer func() { _ = stream.Close() }()
 
-	return nil
+	for {
+		chunk, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			return nil
+		}
+		if recvErr != nil {
+			return fmt.Errorf("stream content: %w", recvErr)
+		}
+		if chunk == nil || chunk.Delta == "" {
+			continue
+		}
+		if emitErr := emit(chunk.Delta); emitErr != nil {
+			return emitErr
+		}
+	}
 }
 
-func toLangChainMessages(input []Message) []lcllms.MessageContent {
-	msgs := make([]lcllms.MessageContent, 0, len(input))
+// usageGenerationInfo 把 provider 的结构化 usage 映射进 GenerationInfo map，
+// 保持与既有 usage 提取逻辑（PromptTokens/CompletionTokens/TotalTokens 键）一致。
+func usageGenerationInfo(usage provider.Usage) map[string]any {
+	if usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
+		return nil
+	}
+	return map[string]any{
+		"PromptTokens":     usage.PromptTokens,
+		"CompletionTokens": usage.CompletionTokens,
+		"TotalTokens":      usage.TotalTokens,
+	}
+}
+
+func toProviderMessages(input []Message) []provider.Message {
+	msgs := make([]provider.Message, 0, len(input))
 	for _, msg := range input {
-		role := lcllms.ChatMessageTypeHuman
+		role := provider.RoleUser
 		switch msg.Role {
 		case RoleSystem:
-			role = lcllms.ChatMessageTypeSystem
+			role = provider.RoleSystem
 		case RoleAssistant:
-			role = lcllms.ChatMessageTypeAI
+			role = provider.RoleAssistant
 		case RoleUser:
-			role = lcllms.ChatMessageTypeHuman
+			role = provider.RoleUser
 		}
-		msgs = append(msgs, lcllms.MessageContent{
-			Role:  role,
-			Parts: []lcllms.ContentPart{lcllms.TextPart(msg.Content)},
+		msgs = append(msgs, provider.Message{
+			Role:    role,
+			Content: []provider.ContentPart{provider.TextPart(msg.Content)},
 		})
 	}
 	return msgs

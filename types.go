@@ -25,9 +25,13 @@ type Callback interface {
 
 // RetrievalMetrics 描述一次检索阶段的聚合指标。
 type RetrievalMetrics struct {
-	Duration              time.Duration
-	HybridEnabled         bool
-	RerankEnabled         bool
+	Duration      time.Duration
+	HybridEnabled bool
+	RerankEnabled bool
+	// RawCandidateCount 记录相似度阈值过滤前的候选数。
+	// 仅在能观测到过滤前候选的检索路径（如 hybrid）下被填充；
+	// 默认 vector-only 路径下阈值过滤在 store 内部完成，此值保持为 0。
+	RawCandidateCount     int
 	VectorCandidateCount  int
 	LexicalCandidateCount int
 	FusedCandidateCount   int

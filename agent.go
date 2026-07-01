@@ -151,6 +151,7 @@ func (r *rootRetriever) SearchDetailed(ctx context.Context, req RetrieverRequest
 			Err:        fmt.Errorf("search vector store for hybrid retrieval: %w", err),
 		}}, nil
 	}
+	metrics.RawCandidateCount = len(allHits)
 	if len(allHits) == 0 {
 		return nil, finish(), nil, nil
 	}
@@ -889,6 +890,9 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 			hits = nil
 			evidenceText = ""
 		} else {
+			if errors.Is(err, ErrEvidenceInsufficient) {
+				trace.setRefusal(classifyEvidenceRefusal(trace.trace.Retrieval))
+			}
 			return Answer{}, err
 		}
 	}
@@ -939,6 +943,9 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 		err = metricsErr
 	}
 	if err != nil {
+		if errors.Is(err, ErrToolCallLimitExceeded) {
+			trace.setRefusal(RefusalToolFailure)
+		}
 		return Answer{}, fmt.Errorf("run answer generation: %w", err)
 	}
 
@@ -1021,6 +1028,9 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 			}
 			if emitErr := emitEvent(StreamEvent{Type: EventToolEnd, ToolName: retrieveToolName, Err: err}); emitErr != nil {
 				return "", emitErr
+			}
+			if errors.Is(err, ErrEvidenceInsufficient) {
+				trace.setRefusal(classifyEvidenceRefusal(trace.trace.Retrieval))
 			}
 			return "", emitError(err)
 		}
@@ -1107,6 +1117,9 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 	if err != nil {
 		if emitterErr != nil && errors.Is(err, emitterErr) {
 			return "", err
+		}
+		if errors.Is(err, ErrToolCallLimitExceeded) {
+			trace.setRefusal(RefusalToolFailure)
 		}
 		return "", emitError(err)
 	}
