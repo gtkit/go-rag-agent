@@ -32,7 +32,7 @@ func BenchmarkChunkerSplit(b *testing.B) {
 
 func BenchmarkAssembleContext(b *testing.B) {
 	chunks := make([]Chunk, 0, 64)
-	for i := 0; i < 64; i++ {
+	for i := range 64 {
 		chunks = append(chunks, Chunk{
 			ChunkID: fmt.Sprintf("chunk-%d", i),
 			Text:    strings.Repeat("context-segment ", 20),

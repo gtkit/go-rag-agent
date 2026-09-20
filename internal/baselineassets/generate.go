@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -247,9 +248,7 @@ func cloneChunk(chunk ragagent.ChunkRecord) ragagent.ChunkRecord {
 	out := chunk
 	if len(chunk.Metadata) > 0 {
 		out.Metadata = make(map[string]string, len(chunk.Metadata))
-		for key, value := range chunk.Metadata {
-			out.Metadata[key] = value
-		}
+		maps.Copy(out.Metadata, chunk.Metadata)
 	}
 	if len(chunk.Embedding) > 0 {
 		out.Embedding = slices.Clone(chunk.Embedding)

@@ -244,8 +244,7 @@ func (s *pgVectorStore) init(ctx context.Context) error {
 }
 
 func isDuplicateExtensionRace(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
+	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
 		if pgErr.Code == "23505" && strings.Contains(pgErr.Message, "pg_extension_name_index") {
 			return true
 		}

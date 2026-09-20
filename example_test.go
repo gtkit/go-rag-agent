@@ -117,6 +117,7 @@ func (exampleVectorStore) Search(context.Context, []float32, int, float32) ([]ra
 		},
 	}, nil
 }
+
 func (exampleVectorStore) SearchWithFilter(context.Context, []float32, int, float32, ragagent.SearchFilter) ([]ragagent.SearchHit, error) {
 	return []ragagent.SearchHit{
 		{

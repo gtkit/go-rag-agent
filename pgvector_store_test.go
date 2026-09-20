@@ -56,7 +56,7 @@ func TestPGVectorStoreConfigValidate(t *testing.T) {
 		{
 			name: "valid pgorm config",
 			cfg: PGVectorStoreConfig{
-				PGORMConfig: ptr(pgorm.NewConfig(
+				PGORMConfig: new(pgorm.NewConfig(
 					pgorm.WithDSN("postgres://user:pass@127.0.0.1:5432/dbname?sslmode=disable"),
 					pgorm.WithStartupPing(false),
 				)),
@@ -69,7 +69,7 @@ func TestPGVectorStoreConfigValidate(t *testing.T) {
 			name: "rejects multiple connection sources",
 			cfg: PGVectorStoreConfig{
 				ConnString: "postgres://user:pass@127.0.0.1:5432/dbname?sslmode=disable",
-				PGORMConfig: ptr(pgorm.NewConfig(
+				PGORMConfig: new(pgorm.NewConfig(
 					pgorm.WithDSN("postgres://user:pass@127.0.0.1:5432/dbname?sslmode=disable"),
 					pgorm.WithStartupPing(false),
 				)),
@@ -111,7 +111,6 @@ func TestPGVectorStoreConfigValidate(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -164,7 +163,6 @@ func TestPGVectorStoreConfigNormalized(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := tc.cfg.normalized()
@@ -248,7 +246,6 @@ func TestPGVectorStoreCreateTableAndIndexSQL(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -313,7 +310,6 @@ func TestPGVectorStoreValidateChunkAndHelpers(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -372,7 +368,6 @@ func TestPGVectorStoreDuplicateExtensionRace(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -435,7 +430,6 @@ func TestPGVectorStoreBuildSearchSQL(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -625,7 +619,6 @@ func TestPGVectorStoreIntegration(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -731,6 +724,7 @@ func pgVectorTestTableName(name string) string {
 	return "pgvector_" + strings.ToLower(replacer.Replace(name))
 }
 
+//go:fix inline
 func ptr[T any](v T) *T {
-	return &v
+	return new(v)
 }

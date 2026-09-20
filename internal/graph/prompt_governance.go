@@ -2,6 +2,7 @@ package graph
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -22,8 +23,8 @@ func compactHistoryForPrompt(history []memory.Turn, maxHistoryTokens int, maxSum
 	used := 0
 	kept := make([]memory.Turn, 0, len(history))
 	dropped := make([]memory.Turn, 0, len(history))
-	for i := len(history) - 1; i >= 0; i-- {
-		turn := history[i]
+	for _, turn := range slices.Backward(history) {
+
 		turnTokens := estimateTextTokens(turn.User) + estimateTextTokens(turn.Assistant)
 		if used+turnTokens > maxHistoryTokens {
 			dropped = append([]memory.Turn{turn}, dropped...)

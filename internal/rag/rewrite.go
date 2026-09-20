@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -15,8 +16,8 @@ func RewriteFollowUp(query string, history []string) string {
 		return normalizedQuery
 	}
 
-	for i := len(history) - 1; i >= 0; i-- {
-		item := normalizeQueryText(history[i])
+	for _, h := range slices.Backward(history) {
+		item := normalizeQueryText(h)
 		if item == "" {
 			continue
 		}

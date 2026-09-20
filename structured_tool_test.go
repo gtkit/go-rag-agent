@@ -31,7 +31,7 @@ func TestValidateToolArguments(t *testing.T) {
 	schema := ToolSchema{
 		Properties: map[string]ToolParameterSchema{
 			"query": {Type: ToolParameterString, MinLength: 2, MaxLength: 8},
-			"limit": {Type: ToolParameterNumber, Minimum: ptrFloat64(1), Maximum: ptrFloat64(10)},
+			"limit": {Type: ToolParameterNumber, Minimum: new(float64(1)), Maximum: new(float64(10))},
 			"mode":  {Type: ToolParameterString, Enum: []string{"fast", "deep"}},
 			"tags":  {Type: ToolParameterArray},
 		},
@@ -80,7 +80,6 @@ func TestValidateToolArguments(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -191,8 +190,9 @@ func TestLegacyToolRegistryCompatibility(t *testing.T) {
 	}
 }
 
+//go:fix inline
 func ptrFloat64(v float64) *float64 {
-	return &v
+	return new(v)
 }
 
 func TestToolSchemaMarshalJSON(t *testing.T) {

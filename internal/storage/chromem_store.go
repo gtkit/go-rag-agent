@@ -271,8 +271,8 @@ func extractUserMetadata(metadata map[string]string) map[string]string {
 
 	extra := make(map[string]string, len(metadata))
 	for key, value := range metadata {
-		if strings.HasPrefix(key, metadataKeyUserPrefix) {
-			extra[strings.TrimPrefix(key, metadataKeyUserPrefix)] = value
+		if after, ok := strings.CutPrefix(key, metadataKeyUserPrefix); ok {
+			extra[after] = value
 		}
 	}
 	if len(extra) == 0 {

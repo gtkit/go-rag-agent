@@ -9,8 +9,10 @@ import (
 	"github.com/gtkit/go-rag-agent/internal/storage"
 )
 
-const accessBoundaryNamespaceKey = "rag_namespace"
-const accessBoundaryNoMatchSource = "/__ragagent_no_match__"
+const (
+	accessBoundaryNamespaceKey  = "rag_namespace"
+	accessBoundaryNoMatchSource = "/__ragagent_no_match__"
+)
 
 // AccessBoundaryConfig 定义静态租户与来源权限边界。
 type AccessBoundaryConfig struct {

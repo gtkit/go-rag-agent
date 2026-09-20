@@ -21,7 +21,6 @@ func TestAddKnowledgeDirSourceDeletesRemovedFiles(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -70,7 +69,6 @@ func TestAddKnowledgeDirSourceDeletesAllStaleFilesWhenDirectoryBecomesEmpty(t *t
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -112,7 +110,6 @@ func TestAddKnowledgeDirSourcePersistsDeletionSyncAcrossRestart(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

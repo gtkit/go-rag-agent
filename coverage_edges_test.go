@@ -52,7 +52,6 @@ printf 'image text from %s' "$1" > "$2"
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -120,7 +119,6 @@ func TestSidecarMetadataParsingEdges(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -281,7 +279,6 @@ func TestOpenAIRerankerEdges(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -354,7 +351,6 @@ func TestExtensionConstructorValidationEdges(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -414,7 +410,6 @@ func TestAccessBoundaryMergePrefixEdges(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -451,7 +446,7 @@ func TestEvalAndStructuredHelperEdges(t *testing.T) {
 		Enabled bool               `json:"enabled"`
 		Child   *structuredSummary `json:"child"`
 	}
-	description := describeStructuredType(reflect.TypeOf(nested{}))
+	description := describeStructuredType(reflect.TypeFor[nested]())
 	for _, want := range []string{`"name": string`, `"scores": [integer]`, `"labels": {string: boolean}`, `"raw": object`, `"ratio": number`, `"enabled": boolean`, `"child": {`} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("describeStructuredType() = %q, missing %q", description, want)
@@ -542,7 +537,6 @@ func TestPGVectorConstructorAndSearchFailFastEdges(t *testing.T) {
 		{name: "dimension mismatch", embedding: []float32{1, 0}, topK: 1, want: "do not match"},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -861,7 +855,6 @@ func TestStructuredToolAdapterEdgeBranches(t *testing.T) {
 		{name: "unsupported type rejected", args: map[string]any{"bad": "x"}, wantErr: true},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -919,7 +912,6 @@ func TestInMemoryLongTermMemoryValidationEdges(t *testing.T) {
 		{name: "missing embedding", records: []LongTermMemoryRecord{{ID: "m", SessionID: "s"}}, want: "memory embedding is required"},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 

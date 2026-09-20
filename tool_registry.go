@@ -3,6 +3,7 @@ package ragagent
 import (
 	"context"
 	"fmt"
+	"maps"
 )
 
 // Tool 定义根包公开的工具契约。
@@ -99,8 +100,6 @@ func (r *ToolRegistry) clone() *ToolRegistry {
 		tools: make(map[string]Tool, len(r.tools)),
 		order: append([]string(nil), r.order...),
 	}
-	for name, tool := range r.tools {
-		cloned.tools[name] = tool
-	}
+	maps.Copy(cloned.tools, r.tools)
 	return cloned
 }

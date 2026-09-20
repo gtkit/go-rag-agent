@@ -6,8 +6,10 @@ import (
 	"strings"
 )
 
-var ErrInvalidContextLimit = errors.New("rag: invalid max chars")
-var ErrNoContextAssembled = errors.New("rag: no chunks assembled")
+var (
+	ErrInvalidContextLimit = errors.New("rag: invalid max chars")
+	ErrNoContextAssembled  = errors.New("rag: no chunks assembled")
+)
 
 func AssembleContext(chunks []Chunk, maxChars int) ([]Chunk, string, error) {
 	if maxChars <= 0 {

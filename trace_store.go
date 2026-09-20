@@ -134,8 +134,8 @@ func (s *InMemoryTraceStore) Query(_ context.Context, query TraceQuery) ([]Store
 	defer s.mu.RUnlock()
 
 	out := make([]StoredTrace, 0, len(s.records))
-	for i := len(s.records) - 1; i >= 0; i-- {
-		record := s.records[i]
+	for _, record := range slices.Backward(s.records) {
+
 		if !query.matches(record) {
 			continue
 		}

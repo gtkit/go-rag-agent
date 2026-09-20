@@ -57,10 +57,7 @@ func (r *openAIReranker) Rerank(ctx context.Context, query string, candidates []
 	if opts.ShortlistSize <= 0 || len(candidates) == 0 || opts.TopK <= 0 {
 		return nil, nil
 	}
-	shortlistSize := opts.ShortlistSize
-	if shortlistSize > len(candidates) {
-		shortlistSize = len(candidates)
-	}
+	shortlistSize := min(opts.ShortlistSize, len(candidates))
 	documents := make([]string, 0, shortlistSize)
 	for _, candidate := range candidates[:shortlistSize] {
 		documents = append(documents, candidate.Chunk.Text)
@@ -81,10 +78,7 @@ func (r *openAIReranker) Rerank(ctx context.Context, query string, candidates []
 		return nil, fmt.Errorf("openai reranker unexpected status %d", status)
 	}
 
-	limit := opts.TopK
-	if limit > len(resp.Results) {
-		limit = len(resp.Results)
-	}
+	limit := min(opts.TopK, len(resp.Results))
 	out := make([]SearchHit, 0, limit)
 	seen := make(map[int]struct{}, limit)
 	for _, result := range resp.Results {

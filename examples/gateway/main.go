@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -99,11 +100,11 @@ func NewChatCompletionsHandler(agent gatewayAgent) http.Handler {
 }
 
 func lastUserMessage(messages []chatCompletionInput) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role != "user" {
+	for _, message := range slices.Backward(messages) {
+		if message.Role != "user" {
 			continue
 		}
-		if content := strings.TrimSpace(messages[i].Content); content != "" {
+		if content := strings.TrimSpace(message.Content); content != "" {
 			return content
 		}
 	}

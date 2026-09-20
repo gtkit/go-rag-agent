@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -209,9 +210,7 @@ func cloneMetadata(input map[string]string) map[string]string {
 		return map[string]string{}
 	}
 	out := make(map[string]string, len(input))
-	for k, v := range input {
-		out[k] = v
-	}
+	maps.Copy(out, input)
 	return out
 }
 
@@ -221,12 +220,8 @@ func mergeMetadata(base map[string]string, override map[string]string) map[strin
 	}
 
 	out := make(map[string]string, len(base)+len(override))
-	for k, v := range base {
-		out[k] = v
-	}
-	for k, v := range override {
-		out[k] = v
-	}
+	maps.Copy(out, base)
+	maps.Copy(out, override)
 	return out
 }
 

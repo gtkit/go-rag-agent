@@ -78,7 +78,6 @@ func TestChromemStoreUpsertAndSearch(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -187,7 +186,6 @@ func TestChromemStoreSearchThresholdFiltering(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -306,7 +304,6 @@ func TestChromemStoreSearchWithFilter(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -377,7 +374,6 @@ func TestChromemStoreUpsertRejectsDuplicateChunkIDInBatch(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -455,7 +451,6 @@ func TestChromemStoreUpsertReplacesParentChunksAndPreventsStaleResults(t *testin
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -543,7 +538,6 @@ func TestChromemStoreUpsertCanceledContextPreservesExistingData(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -635,7 +629,6 @@ func TestChromemStoreUpsertPostAddCancellationCleansStaleAndReturnsContextError(
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -827,7 +820,6 @@ func TestChromemStoreUpsertReplaceSameIDSemantics(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -901,7 +893,6 @@ func TestChromemStorePersistentReopen(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -982,7 +973,6 @@ func TestChromemStoreParseIntMetadata(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := parseIntMetadata(tc.metadata, tc.key)
@@ -1032,7 +1022,6 @@ func TestChromemStoreErrors(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			store, err := NewChromemStore(Config{})

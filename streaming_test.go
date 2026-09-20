@@ -105,7 +105,6 @@ func TestSessionAskStreamSequenceAndRetrievalOwnership(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -221,7 +220,6 @@ func TestSessionAskStreamDoneCarriesExecutionTrace(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -311,7 +309,6 @@ func TestSessionAskStreamRunnerFailureEmitsErrorAndModelTelemetry(t *testing.T) 
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -469,7 +466,6 @@ func TestSessionAskStreamWithOptionsFiltersRetrieval(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -885,7 +881,6 @@ func TestSessionAskStreamSameSessionSerialization(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1067,7 +1062,6 @@ func TestSessionAskStreamCancellationNoLeak(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1216,7 +1210,6 @@ func TestSessionAskStreamEmitterCanMutateSessionStateWithoutDeadlock(t *testing.
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

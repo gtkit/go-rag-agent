@@ -25,9 +25,6 @@ func (o Options) CandidateLimit(topK int) int {
 
 func (o Options) RerankShortlistSize(topK int, candidateCount int) int {
 	o = o.Normalize()
-	shortlistSize := max(topK, topK*o.RerankMultiplier)
-	if shortlistSize > candidateCount {
-		shortlistSize = candidateCount
-	}
+	shortlistSize := min(max(topK, topK*o.RerankMultiplier), candidateCount)
 	return shortlistSize
 }

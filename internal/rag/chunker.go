@@ -47,10 +47,7 @@ func (c *Chunker) Split(doc Document) []Chunk {
 	step := c.size - c.overlap
 	chunks := make([]Chunk, 0, len(runes)/step+1)
 	for start := 0; start < len(runes); start += step {
-		end := start + c.size
-		if end > len(runes) {
-			end = len(runes)
-		}
+		end := min(start+c.size, len(runes))
 		chunks = append(chunks, Chunk{
 			ChunkID:    fmt.Sprintf("%s:%d", doc.ID, len(chunks)),
 			ParentID:   doc.ID,

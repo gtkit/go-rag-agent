@@ -1167,7 +1167,6 @@ func TestStorageBoundaryTypesCompile(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tc.run(t)
@@ -1290,7 +1289,6 @@ func TestDefaultStorageAdapters(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tc.run(t)
@@ -1593,7 +1591,6 @@ func TestGetSessionReusesSameID(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1637,7 +1634,6 @@ func TestSessionAskExecutionTrace(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1880,7 +1876,6 @@ func TestSessionClearHistory(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1962,7 +1957,6 @@ func TestSessionAskReturnsAnswerAndCitations(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -2115,7 +2109,6 @@ func TestSessionAskWithOptionsFiltersRetrieval(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -2239,7 +2232,6 @@ func TestSessionAskWithHybridRetrievalPromotesLexicalHit(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -2329,7 +2321,6 @@ func TestSessionAskWithHybridCandidateMultiplierAffectsPromotion(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -2434,7 +2425,6 @@ func TestAskEmitsDetailedMetricsAndFallbacks(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -2555,7 +2545,6 @@ func TestAddKnowledgeIngestsAndUpsertsChunks(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

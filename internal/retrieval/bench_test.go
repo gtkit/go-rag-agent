@@ -57,7 +57,7 @@ func BenchmarkRetrievalModes(b *testing.B) {
 
 func benchmarkCandidates(count int) []storage.SearchHit {
 	candidates := make([]storage.SearchHit, 0, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		text := fmt.Sprintf("semantic candidate %d", i)
 		title := fmt.Sprintf("Candidate %d", i)
 		score := float32(count-i) / float32(count)

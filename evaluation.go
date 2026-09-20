@@ -421,11 +421,8 @@ func scorePrecision(citations []Citation, wantSources []string) float64 {
 	}
 	matched := 0
 	for _, citation := range citations {
-		for _, source := range wantSources {
-			if citation.SourcePath == source {
-				matched++
-				break
-			}
+		if slices.Contains(wantSources, citation.SourcePath) {
+			matched++
 		}
 	}
 	return float64(matched) / float64(len(citations))

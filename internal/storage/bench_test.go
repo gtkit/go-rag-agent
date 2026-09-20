@@ -24,7 +24,7 @@ func BenchmarkChromemStoreSearchInMemory(b *testing.B) {
 	)
 
 	records := make([]ChunkRecord, 0, chunkCount)
-	for i := 0; i < chunkCount; i++ {
+	for i := range chunkCount {
 		records = append(records, ChunkRecord{
 			ChunkID:    fmt.Sprintf("chunk-%04d", i),
 			ParentID:   fmt.Sprintf("doc-%03d", i/10),
@@ -58,7 +58,7 @@ func BenchmarkChromemStoreSearchInMemory(b *testing.B) {
 func benchmarkEmbedding(seed int, dim int) []float32 {
 	row := make([]float32, dim)
 	state := uint64(seed+1)*0x9e3779b97f4a7c15 + 0xbf58476d1ce4e5b9
-	for i := 0; i < dim; i++ {
+	for i := range dim {
 		state ^= state >> 30
 		state *= 0xbf58476d1ce4e5b9
 		state ^= state >> 27
