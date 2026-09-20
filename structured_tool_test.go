@@ -190,11 +190,6 @@ func TestLegacyToolRegistryCompatibility(t *testing.T) {
 	}
 }
 
-//go:fix inline
-func ptrFloat64(v float64) *float64 {
-	return new(v)
-}
-
 func TestToolSchemaMarshalJSON(t *testing.T) {
 	t.Parallel()
 

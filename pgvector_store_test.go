@@ -723,8 +723,3 @@ func pgVectorTestTableName(name string) string {
 	replacer := strings.NewReplacer("/", "_", "-", "_", " ", "_")
 	return "pgvector_" + strings.ToLower(replacer.Replace(name))
 }
-
-//go:fix inline
-func ptr[T any](v T) *T {
-	return new(v)
-}
