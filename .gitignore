@@ -1,6 +1,5 @@
 .DS_Store
 .idea/
-.claude/
 docs/
 !docs/
 docs/*
@@ -19,19 +18,8 @@ docs/superpowers/plans/*
 !docs/superpowers/specs/
 docs/superpowers/specs/*
 !docs/superpowers/specs/2026-04-23-sdk-positioning-refresh-design.md
-findings.md
-progress.md
-task_plan.md
 # Harness: Agent 错误记忆
-.harness/
-CLAUDE.md
-AGENTS.md
-.agents/
-.codex/
 .worktrees/
-tools/
-.learnings/
-openspec/
 !openspec/
 openspec/*
 !openspec/changes/
@@ -48,3 +36,7 @@ openspec/changes/archive/*
 openspec/specs/*
 !openspec/specs/sdk-positioning-assets/
 !openspec/specs/sdk-positioning-assets/**
+.vscode/
+.Ds_Store
+*.log
+*.out

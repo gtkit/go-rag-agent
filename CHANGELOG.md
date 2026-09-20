@@ -10,6 +10,31 @@
 ## [Unreleased]
 
 ### Added
+- 平台原生模型协议：
+  - `ToolCapableChatModel` 扩展接口、`GenerateOptions`、`ToolDefinition`、`ToolCall`、`ResponseFormat`、`RoleTool`
+  - `NewChatModelFromProvider(provider, model)` / `NewEmbedderFromProvider(embedder)`：任意 go-llm-provider Provider（Anthropic、Gemini、Ollama、Azure、Bedrock 等）可直接注入
+  - `EnableToolCalling` 在模型支持时使用原生 function calling：工具定义随请求下发、`tool` 角色回灌、同一响应多工具调用逐个执行、工具失败回传模型自纠、流式逐 token 输出
+  - `Config.ToolCallPolicy` / `ToolCallPolicy` / `ToolInvocation` / `ErrToolCallDenied`：模型请求的工具调用执行前授权
+  - `Config.StructuredOutputFormat`：`AskStructured` 以 `json_object`（默认）或 `json_schema` 原生响应格式请求，`prompt` 保留纯提示词模式
+  - provider trace 的 usage 新增 `ReasoningTokens`；流式调用在平台分块携带 usage 时同样记录 usage 与成本
+- 会话历史外部存储：
+  - `HistoryStore` 接口、`HistoryTurn`、`MemoryComponents.HistoryStore` / `HistoryFailurePolicy`
+  - `NewRedisHistoryStore(client, cfg)`：Redis List 实现，支持 `MaxRounds` 截断与 `TTL`
+  - 历史加载 / 写回 / 清空以 `history_load` / `history_append` / `history_clear` 记入 `ExecutionTrace.Memory`
+- `Config.ReasoningEffort` / `GenerateOptions.ReasoningEffort`：推理强度透传到平台
+- OpenSpec 变更 `add-native-tool-calling-and-structured-output`、`externalize-history-and-reasoning-controls`
+
+### Changed
+- 纯文本 `Tool` 在模型驱动调用下的参数约定为 `{"input": string}`，运行时把 `input` 原文传给 `Run`；结构化工具的参数始终以 JSON 传入，即使其 schema 自带 `input` 字段
+- tool calling 循环改为与默认问答共用 prompt 构造：会话历史、历史压缩摘要、token 预算与不可信文本硬化都生效；结构化输出指令进入工具循环
+- provider 韧性包装保留内层模型的 `ToolCapableChatModel` 能力
+- `ExecutionTrace.ToolCalls` 按调用逐条记录；只触发 `OnToolEnd` 的执行前失败（未知工具、参数无效、授权拒绝）也会补一条带错误的记录
+
+### Fixed
+- 修复 `web_search.go` 引用不存在的 `httpc.WithLogger` 导致的编译失败
+
+### Tests
+- 新增原生工具循环（多工具调用、失败回传、授权拒绝、预算、流式与同步答案一致）、外部历史存储（加载截断、写回、挂起清空、失败策略、Redis 实现）、韧性包装能力透传与重试、`ProviderChatModel` 原生协议请求体与流式 tool-call 累积、JSON Schema 反射、trace 工具记录补条的单元测试
 - SDK 扩展适配能力：
   - `DocumentConverter`
   - `ConvertibleFileSource(path)`

@@ -48,7 +48,12 @@ func (r *ChatRunner) Ask(ctx context.Context, req Request) (string, error) {
 		return "", err
 	}
 
-	msg, err := r.model.Generate(ctx, msgs)
+	var msg llm.Message
+	if capable, ok := generateOptionsFor(r.model, req); ok {
+		msg, err = capable.GenerateWithOptions(ctx, msgs, requestGenerateOptions(req))
+	} else {
+		msg, err = r.model.Generate(ctx, msgs)
+	}
 	if err != nil {
 		return "", fmt.Errorf("generate model answer: %w", err)
 	}
@@ -63,7 +68,7 @@ func (r *ChatRunner) AskStream(ctx context.Context, req Request, emit StreamEmit
 	}
 
 	step := 0
-	if err := r.model.Stream(ctx, msgs, func(chunk string) error {
+	emitChunk := func(chunk string) error {
 		if strings.TrimSpace(chunk) == "" {
 			return nil
 		}
@@ -73,7 +78,13 @@ func (r *ChatRunner) AskStream(ctx context.Context, req Request, emit StreamEmit
 			Content: chunk,
 			Step:    step,
 		})
-	}); err != nil {
+	}
+	if capable, ok := generateOptionsFor(r.model, req); ok {
+		_, err = capable.StreamWithOptions(ctx, msgs, requestGenerateOptions(req), emitChunk)
+	} else {
+		err = r.model.Stream(ctx, msgs, emitChunk)
+	}
+	if err != nil {
 		return fmt.Errorf("stream model answer: %w", err)
 	}
 
@@ -105,8 +116,23 @@ func (r *ChatRunner) messagesForRequest(ctx context.Context, req Request) ([]llm
 	return r.messagesForRequestUncached(ctx, req)
 }
 
-func (r *ChatRunner) messagesForRequestUncached(ctx context.Context, req Request) ([]llm.Message, error) {
-	msgs := buildPromptMessages(
+// generateOptionsFor 在模型支持扩展接口且请求带有原生选项（响应格式或推理强度）时返回该模型。
+func generateOptionsFor(model llm.ChatModel, req Request) (llm.ToolCapableChatModel, bool) {
+	capable, ok := model.(llm.ToolCapableChatModel)
+	if !ok || (req.ResponseFormat == nil && req.ReasoningEffort == "") {
+		return nil, false
+	}
+	return capable, true
+}
+
+func requestGenerateOptions(req Request) llm.GenerateOptions {
+	return llm.GenerateOptions{ResponseFormat: req.ResponseFormat, ReasoningEffort: req.ReasoningEffort}
+}
+
+// PromptMessages 按 Request 的历史、证据、记忆与 token 预算构造 prompt 消息，
+// 含历史压缩摘要与不可信文本硬化，供所有 runner 复用。
+func PromptMessages(req Request) []llm.Message {
+	return buildPromptMessages(
 		req.History,
 		req.EvidenceText,
 		req.LongTermMemoryText,
@@ -120,6 +146,10 @@ func (r *ChatRunner) messagesForRequestUncached(ctx context.Context, req Request
 		req.MaxSummaryTokens,
 		req.EnablePromptHardening,
 	)
+}
+
+func (r *ChatRunner) messagesForRequestUncached(ctx context.Context, req Request) ([]llm.Message, error) {
+	msgs := PromptMessages(req)
 	if strings.TrimSpace(req.EvidenceText) != "" {
 		return msgs, nil
 	}
@@ -152,21 +182,8 @@ func (r *ChatRunner) messagesForRequestUncached(ctx context.Context, req Request
 		if strings.TrimSpace(toolResult) == "" {
 			continue
 		}
-		msgs = buildPromptMessages(
-			req.History,
-			toolResult,
-			req.LongTermMemoryText,
-			req.Query,
-			req.ResponseFormatInstruction,
-			req.ConversationSummary,
-			req.MaxPromptTokens,
-			req.MaxHistoryTokens,
-			req.MaxEvidenceTokens,
-			req.MaxMemoryTokens,
-			req.MaxSummaryTokens,
-			req.EnablePromptHardening,
-		)
-		return msgs, nil
+		req.EvidenceText = toolResult
+		return PromptMessages(req), nil
 	}
 	if lastErr != nil {
 		return nil, fmt.Errorf("run fallback tools: %w", lastErr)

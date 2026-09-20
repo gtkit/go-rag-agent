@@ -8,13 +8,21 @@ import (
 	provider "github.com/gtkit/go-llm-provider/v2/provider"
 )
 
-// OpenAIEmbedder 将 go-llm-provider 的 OpenAI 兼容 Embedder 适配到当前包的 Embedder 接口。
-type OpenAIEmbedder struct {
+// ProviderEmbedder 把 go-llm-provider 的任意 Embedder 适配到当前包的 Embedder 接口。
+type ProviderEmbedder struct {
 	client provider.Embedder
 }
 
+// NewProviderEmbedder 用已构造的 Embedder 创建向量化适配器。
+func NewProviderEmbedder(client provider.Embedder) (*ProviderEmbedder, error) {
+	if client == nil {
+		return nil, fmt.Errorf("embedding provider is required")
+	}
+	return &ProviderEmbedder{client: client}, nil
+}
+
 // NewOpenAIEmbedder 创建一个 OpenAI-compatible embedding 适配器，底层由 go-llm-provider/v2 驱动。
-func NewOpenAIEmbedder(_ context.Context, cfg EmbeddingConfig) (Embedder, error) {
+func NewOpenAIEmbedder(_ context.Context, cfg EmbeddingConfig) (*ProviderEmbedder, error) {
 	cfg = cfg.normalized()
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate embedding config: %w", err)
@@ -30,19 +38,18 @@ func NewOpenAIEmbedder(_ context.Context, cfg EmbeddingConfig) (Embedder, error)
 	if err != nil {
 		return nil, fmt.Errorf("new openai embedder: %w", err)
 	}
-
-	return &OpenAIEmbedder{client: client}, nil
+	return NewProviderEmbedder(client)
 }
 
 // EmbedTexts 对文本做向量化，并返回 float32 向量。
-func (e *OpenAIEmbedder) EmbedTexts(ctx context.Context, texts []string) ([][]float32, error) {
+func (e *ProviderEmbedder) EmbedTexts(ctx context.Context, texts []string) ([][]float32, error) {
 	normalizedTexts, err := normalizeEmbeddingTexts(texts)
 	if err != nil {
 		return nil, fmt.Errorf("validate embedding input: %w", err)
 	}
 
 	if e == nil || e.client == nil {
-		return nil, fmt.Errorf("openai embedder is nil")
+		return nil, fmt.Errorf("embedder provider is nil")
 	}
 
 	rows, err := provider.EmbedBatch(ctx, e.client, normalizedTexts)

@@ -18,6 +18,10 @@ type MemoryComponents struct {
 	Provider       MemoryProvider
 	// ProviderFailurePolicy controls whether memory provider retrieval failures fail the request.
 	ProviderFailurePolicy MemoryFailurePolicy
+	// HistoryStore 配置后 Session 短期历史以该外部存储为准，进程内历史不再使用。
+	HistoryStore HistoryStore
+	// HistoryFailurePolicy 控制历史加载 / 写回失败是否让本次问答失败，默认 fail-closed。
+	HistoryFailurePolicy MemoryFailurePolicy
 }
 
 // LongTermMemoryRecord 表示一条长期记忆记录。

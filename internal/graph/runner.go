@@ -32,16 +32,20 @@ type Request struct {
 	LongTermMemoryText        string
 	ConversationSummary       string
 	ResponseFormatInstruction string
-	MaxPromptTokens           int
-	MaxHistoryTokens          int
-	MaxEvidenceTokens         int
-	MaxMemoryTokens           int
-	MaxSummaryTokens          int
-	EnablePromptHardening     bool
-	PromptCache               PromptCache
-	PromptCacheObserver       func(bool)
-	ToolObserver              ToolObserver
-	ToolCallLimiter           ToolCallLimiter
+	// ResponseFormat 在模型实现 llm.ToolCapableChatModel 时以平台原生 response_format 下发。
+	ResponseFormat *llm.ResponseFormat
+	// ReasoningEffort 非空且模型实现 llm.ToolCapableChatModel 时随请求下发。
+	ReasoningEffort       string
+	MaxPromptTokens       int
+	MaxHistoryTokens      int
+	MaxEvidenceTokens     int
+	MaxMemoryTokens       int
+	MaxSummaryTokens      int
+	EnablePromptHardening bool
+	PromptCache           PromptCache
+	PromptCacheObserver   func(bool)
+	ToolObserver          ToolObserver
+	ToolCallLimiter       ToolCallLimiter
 }
 
 // EventType 标识 graph 层流式事件类型。

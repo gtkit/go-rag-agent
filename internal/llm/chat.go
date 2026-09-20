@@ -15,19 +15,75 @@ const (
 	RoleSystem    Role = "system"
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
+	// RoleTool 表示工具执行结果消息，必须携带 ToolCallID 关联到模型请求的调用。
+	RoleTool Role = "tool"
 )
+
+// ToolCall 表示模型请求的一次原生工具调用。
+type ToolCall struct {
+	ID   string
+	Name string
+	// Arguments 是模型生成的 JSON 参数文本。
+	Arguments string
+}
 
 // Message 表示聊天模型输入输出消息。
 type Message struct {
-	Role           Role
-	Content        string
+	Role    Role
+	Content string
+	// ToolCalls 仅在 Role == RoleAssistant 时有意义，表示模型请求的工具调用。
+	ToolCalls []ToolCall
+	// ToolCallID 仅在 Role == RoleTool 时有意义。
+	ToolCallID     string
 	GenerationInfo map[string]any
+}
+
+// ToolDefinition 描述随请求下发给模型的原生工具。
+type ToolDefinition struct {
+	Name        string
+	Description string
+	// Parameters 是 JSON Schema 对象，需可被 json.Marshal；nil 表示无参数。
+	Parameters any
+}
+
+// ResponseFormatType 标识平台原生结构化输出格式。
+type ResponseFormatType string
+
+const (
+	// ResponseFormatJSONObject 要求模型输出合法 JSON 对象。
+	ResponseFormatJSONObject ResponseFormatType = "json_object"
+	// ResponseFormatJSONSchema 要求模型输出符合 Schema 的 JSON。
+	ResponseFormatJSONSchema ResponseFormatType = "json_schema"
+)
+
+// ResponseFormat 描述一次请求的原生结构化输出格式。
+type ResponseFormat struct {
+	Type ResponseFormatType
+	// Name 与 Schema 仅在 Type == ResponseFormatJSONSchema 时使用。
+	Name   string
+	Schema any
+}
+
+// GenerateOptions 是携带工具定义与响应格式的生成参数。
+type GenerateOptions struct {
+	Tools          []ToolDefinition
+	ResponseFormat *ResponseFormat
+	// ReasoningEffort 非空时映射为平台推理强度参数（如 reasoning_effort），合法取值由平台决定。
+	ReasoningEffort string
 }
 
 // ChatModel 表示当前项目使用的聊天模型抽象。
 type ChatModel interface {
 	Generate(ctx context.Context, input []Message) (Message, error)
 	Stream(ctx context.Context, input []Message, emit func(string) error) error
+}
+
+// ToolCapableChatModel 是可选扩展接口：支持平台原生工具调用与结构化输出。
+// StreamWithOptions 对每个文本增量调用 emit，并在流结束后返回包含完整文本与累积 ToolCalls 的消息。
+type ToolCapableChatModel interface {
+	ChatModel
+	GenerateWithOptions(ctx context.Context, input []Message, opts GenerateOptions) (Message, error)
+	StreamWithOptions(ctx context.Context, input []Message, opts GenerateOptions, emit func(string) error) (Message, error)
 }
 
 // ChatConfig 保存聊天模型适配器的构造配置。

@@ -229,7 +229,7 @@ sequenceDiagram
 - `TopK`（默认 `5`）
 - `ChunkSize`（默认 `1000`）
 - `MaxHistoryRounds`（默认 `8`）
-- `MaxIterations`（默认 `3`，当前 LangChainGo PoC 分支里保留字段但未参与内部执行循环）
+- `MaxIterations`（默认 `3`，`EnableToolCalling=true` 时限制工具循环的模型调用轮次）
 - `RequestTimeout`（默认 `30s`）
 - `EnableHybridSearch`（默认 `false`）
 - `EnableRerank`（默认 `false`）
@@ -275,6 +275,16 @@ go run ./examples/pgvector
 示例代码不会硬编码真实 API key。生产环境请从环境变量、密钥管理服务或运行平台 secret 注入读取凭据，不要把凭据提交到版本库。
 - `ToolRegistry`
   说明：可选工具注册表；支持注册或覆写工具
+- `ToolCallPolicy`
+  说明：tool calling 下模型请求的每次工具调用执行前的授权钩子；拒绝时以 `ErrToolCallDenied` 中断
+- `StructuredOutputFormat`
+  说明：`AskStructured` 的原生结构化输出模式，`json_object`（默认）/ `json_schema` / `prompt`
+- `ReasoningEffort`
+  说明：推理强度，非空时随每次模型请求下发（模型需实现 `ToolCapableChatModel`），取值由平台定义，如 `low` / `medium` / `high`
+- `Memory.HistoryStore`
+  说明：可选的会话短期历史外部存储；配置后多实例共享同一 `SessionID` 的历史
+- `Memory.HistoryFailurePolicy`
+  说明：历史加载 / 写回失败策略，默认 `MemoryFailurePolicyFailClosed`
 - `ProviderGovernance`
   说明：provider 级错误分类、重试/退避和 usage/cost 聚合配置
 - `TraceRecorder`
@@ -388,6 +398,49 @@ cfg := ragagent.Config{
 ```
 
 如果你有自己的 provider 抽象层，只要实现根包公开的 `ChatModel` / `Embedder` 接口即可。
+
+### 接入 Anthropic / Gemini / Ollama 等非 OpenAI 平台
+
+`github.com/gtkit/go-llm-provider/v2/provider` 构造的任意 Provider / Embedder 都可以直接适配注入：
+
+```go
+import llmprovider "github.com/gtkit/go-llm-provider/v2/provider"
+
+claude, err := llmprovider.NewAnthropicProvider(llmprovider.NativeProviderConfig{
+	APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+	Model:  "claude-sonnet-5",
+})
+if err != nil {
+	log.Fatalf("new anthropic provider: %v", err)
+}
+chatModel, err := ragagent.NewChatModelFromProvider(claude, "")
+if err != nil {
+	log.Fatalf("adapt chat model: %v", err)
+}
+
+cfg := ragagent.Config{
+	Runtime: ragagent.RuntimeComponents{ChatModel: chatModel, Embedder: embedder},
+}
+```
+
+`NewEmbedderFromProvider(embedder)` 对应向量化侧。`NewChatModelFromProvider` 与 `NewOpenAIChatModel` 返回的模型都实现 `ToolCapableChatModel`，因此 tool calling 与结构化输出会自动走平台原生协议。
+
+### ToolCapableChatModel 扩展接口
+
+自定义 `ChatModel` 实现如果同时实现下面两个方法，SDK 会把它当作支持原生工具调用与 `response_format` 的模型：
+
+```go
+GenerateWithOptions(ctx context.Context, input []ragagent.Message, opts ragagent.GenerateOptions) (ragagent.Message, error)
+StreamWithOptions(ctx context.Context, input []ragagent.Message, opts ragagent.GenerateOptions, emit func(string) error) (ragagent.Message, error)
+```
+
+- `GenerateOptions.Tools` 是随请求下发的 `ToolDefinition` 列表，模型请求调用时在返回消息的 `ToolCalls` 中给出 ID、名称与 JSON 参数
+- `GenerateOptions.ResponseFormat` 是 `json_object` / `json_schema` 响应格式
+- `GenerateOptions.ReasoningEffort` 是 `Config.ReasoningEffort` 透传下来的推理强度，默认实现映射为平台的 `reasoning_effort` 类参数
+- 工具结果以 `RoleTool` 消息回传，`ToolCallID` 关联到对应的 `ToolCall.ID`
+- `StreamWithOptions` 对每个文本增量调用 `emit`，流结束后返回含完整文本与累积 `ToolCalls` 的消息
+
+只实现基础 `ChatModel` 的模型继续走提示词协议。
 
 ## 存储、加载与重排边界
 
@@ -1318,12 +1371,48 @@ cfg := ragagent.Config{
 }
 ```
 
+### 原生工具协议
+
+聊天模型实现 `ToolCapableChatModel`（默认 `NewOpenAIChatModel` 与 `NewChatModelFromProvider` 都实现）时，工具循环使用平台原生 function calling：
+
+- 注册表中的每个工具转换为原生工具定义随每轮请求下发：结构化工具使用其 `ToolSchema`；纯文本 `Tool` 使用单字段 `{"input": string}` schema，运行时把 `input` 字段原文传给 `Run`
+- 模型在同一响应里请求多个工具调用时按顺序逐个执行，每个结果以 `tool` 角色消息回灌，再进入下一轮
+- 未知工具、参数校验失败、工具执行失败会编码为 `{"error": ...}` 的 tool 结果回传模型，让模型自纠或改答；工具执行失败只回传泛化描述，SDK 自身的协议错误原文回传。这些失败同样会进入 `tool_end` 事件与 execution trace
+- `MaxToolCalls` 计每次工具执行，`MaxIterations` 计模型调用轮次，两者耗尽都以 `ErrToolCallLimitExceeded` 中断
+- 工具循环使用与默认问答相同的 prompt 构造：会话历史、历史压缩摘要、token 预算、证据与记忆的不可信文本硬化都生效
+- 流式路径下每轮模型输出的文本增量都作为 `answer_chunk` 发出；多轮都产出文本时以换行分隔，同步 `Ask` 返回同样的拼接结果
+
+模型只实现基础 `ChatModel` 时，循环退回 JSON 信封协议：模型以 `{"tool_call":{"name":...,"arguments":{...}}}` 文本请求工具，任一工具失败即中断本次问答。
+
+### 工具调用授权
+
+`Config.ToolCallPolicy` 在执行模型请求的每次工具调用前授权，适合按租户放行工具、人工确认高风险操作或做参数级审计：
+
+```go
+type tenantToolPolicy struct{}
+
+func (tenantToolPolicy) AuthorizeToolCall(ctx context.Context, call ragagent.ToolInvocation) error {
+	if call.Name == "issue_refund" && tenantFromContext(ctx) != "finance" {
+		return errors.New("refund tool is limited to the finance tenant")
+	}
+	return nil
+}
+
+cfg := ragagent.Config{
+	EnableToolCalling: true,
+	ToolRegistry:      registry,
+	ToolCallPolicy:    tenantToolPolicy{},
+}
+```
+
+策略返回错误时该工具不会执行，`tool_end` 事件与 trace 记录该错误，本次问答以 `errors.Is(err, ragagent.ErrToolCallDenied)` 为真的错误返回。会话、租户等信息由调用方通过 `ctx` 传入策略。策略只作用于模型请求的工具调用；默认问答路径的 fallback 工具由 `EnableWebSearch` / `ToolRegistry` 在配置期决定。
+
 生产安全边界：
 - SDK 不内置 Shell、数据库执行、文件写入或任务调度工具。
 - 所有可调用工具都必须由宿主服务显式注册。
 - 启用 tool calling 时必须配置 `ToolRegistry`，否则配置校验失败。
 - 工具循环同时受 `MaxToolCalls`、`MaxIterations` 和调用方 `context.Context` 控制。
-- 工具实现应由宿主服务自行做鉴权、租户隔离、输入长度限制、超时、审计和脱敏。
+- 工具实现应由宿主服务自行做鉴权、租户隔离、输入长度限制、超时、审计和脱敏；参数级授权可通过 `ToolCallPolicy` 集中实现。
 
 ## 外部 Reranker 适配
 
@@ -1438,7 +1527,7 @@ func (metricsObserver) OnFallback(_ context.Context, e ragagent.FallbackEvent) {
 trace 当前包含：
 - 原始 query 与 rewrite 后 query
 - 检索过滤条件
-- tool 调用摘要
+- tool 调用摘要：每次调用独立成条；未知工具、参数校验失败、授权拒绝这类执行前失败也会记一条起止时间相同、带错误的记录
 - `RetrievalMetrics`（含阈值过滤前候选数 `RawCandidateCount`）
 - `ModelMetrics`
 - fallback 事件
@@ -1666,7 +1755,7 @@ cfg := ragagent.Config{
 
 使用方式是传入一个非 nil 指针目标，库会：
 1. 继续走现有 RAG 检索链
-2. 要求模型只返回 JSON
+2. 要求模型只返回 JSON，并在模型支持时以平台原生 `response_format` 下发
 3. 尝试从模型文本中提取 JSON
 4. 把 JSON 反序列化到你提供的目标结构
 
@@ -1689,10 +1778,19 @@ fmt.Println(result.RawJSON)
 fmt.Println(result.Answer.Citations)
 ```
 
+`Config.StructuredOutputFormat` 控制原生模式：
+- `StructuredOutputJSONObject`（默认）
+  说明：以 `json_object` 响应格式请求，OpenAI 兼容平台覆盖最广
+- `StructuredOutputJSONSchema`
+  说明：把 `target` 的类型反射为 JSON Schema（尊重 `json` 标签、跳过 `json:"-"`、指针与 `omitempty` 字段视为可选、`time.Time` 映射为 `date-time` 字符串），以 `json_schema` 响应格式请求
+- `StructuredOutputPrompt`
+  说明：只依赖提示词指令；接入的网关拒绝 `response_format` 参数时切到这个值
+
+原生格式只在聊天模型实现 `ToolCapableChatModel` 时下发，其它模型自动按 `prompt` 模式执行。`EnableToolCalling=true` 时结构化输出指令与响应格式同样进入工具循环的每轮请求。
+
 当前约束：
 - `target` 必须是非 nil 指针
 - 当前只支持同步结构化输出，不支持流式结构化输出
-- 第一版不接模型原生 function-calling / JSON schema 协议
 - 模型如果返回 fenced code block 或前后带说明文字，库会尝试提取其中的首个有效 JSON
 
 ## 回归评测
@@ -1822,6 +1920,38 @@ if err := agent.AddKnowledge(ctx, src); err != nil {
 - 同一个 Session 上，`Ask` / `AskStream` 会串行执行。
 - 不同 Session 之间可以并发执行。
 
+### 会话历史外部存储
+
+默认短期历史保存在进程内存。多实例部署时通过 `MemoryComponents.HistoryStore` 把历史放到共享存储，同一 `SessionID` 在任意实例上都能拿到同一份历史：
+
+```go
+history, err := ragagent.NewRedisHistoryStore(redisClient, ragagent.RedisHistoryStoreConfig{
+	KeyPrefix: "ragagent:history",
+	TTL:       24 * time.Hour,
+	MaxRounds: 32,
+})
+if err != nil {
+	log.Fatalf("new history store: %v", err)
+}
+
+cfg := ragagent.Config{
+	Memory: ragagent.MemoryComponents{
+		HistoryStore:         history,
+		HistoryFailurePolicy: ragagent.MemoryFailurePolicyFailClosed,
+	},
+}
+```
+
+`HistoryStore` 接口只有三个方法，`Load` 按写入顺序返回该 Session 的全部轮次，`Append` 追加一轮，`Clear` 清空；任何 KV / 关系库都可以实现。Redis 实现使用 List：每个 Session 一个键 `<KeyPrefix>:<sessionID>`，`Append` 通过 pipeline 完成 `RPUSH` + `LTRIM`（`MaxRounds > 0` 时）+ `EXPIRE`（`TTL > 0` 时）。
+
+配置后的语义：
+- 每次问答开始时调用 `Load`，只取最近 `MaxHistoryRounds` 轮参与追问重写、prompt 构造和 `MemoryProvider.Retrieve` 的 `History` 入参；存储侧可以保留更多轮次
+- 问答成功后调用 `Append` 写回本轮 user query 与 assistant answer，进程内历史不再使用
+- `ClearHistory` 在 Session 空闲时立即调用 `Clear`；正在执行时等该次执行结束后调用 `Clear` 并丢弃该轮，与进程内模式一致
+- `HistoryFailurePolicy` 为 `MemoryFailurePolicyFailClosed`（默认）时，加载或写回失败让本次问答返回错误；为 `MemoryFailurePolicyFailOpen` 时加载失败按空历史继续、写回失败忽略
+- 加载、写回、清空都以 `history_load` / `history_append` / `history_clear` 记入 `ExecutionTrace.Memory`
+- 工具调用消息不进入历史，历史仍是 user / assistant 文本轮次
+
 ## 流式行为
 
 `AskStream` 会通过 `StreamEvent` 发送这些事件：
@@ -1835,6 +1965,8 @@ if err := agent.AddKnowledge(ctx, src); err != nil {
 - `done`
 
 如果你的 emitter 回调返回错误，流式过程会立刻停止并把这个错误返回给调用方。
+
+`EnableToolCalling=true` 且模型支持原生工具协议时，每轮模型输出都逐 token 发出 `answer_chunk`，工具执行前后发出 `tool_start` / `tool_end`；工具轮次中模型输出的过渡文本同样会作为 `answer_chunk` 到达，UI 可结合紧随其后的 `tool_start` 事件渲染为过程说明。
 
 ## 检索延迟设计
 
@@ -1854,7 +1986,6 @@ if err := agent.AddKnowledge(ctx, src); err != nil {
 
 当前库已经通过 `Config.ToolRegistry` 开放自定义工具注册能力。
 
-现阶段限制：
-- 当前工具注册表主要服务于 evidence-empty fallback 工具链
-- 不是完整的模型驱动任意工具调用协议
-- `retrieve_context` 仍然由主流程优先执行，不由模型自由选择
+两条使用路径：
+- 默认路径：注册表服务于 evidence-empty fallback 工具链，`retrieve_context` 由主流程优先执行
+- `EnableToolCalling=true`：模型通过平台原生 function calling 自行选择并调用注册表中的工具（含 `retrieve_context`），见「结构化工具与 Tool Calling」

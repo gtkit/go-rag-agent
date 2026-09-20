@@ -8,6 +8,18 @@ import (
 	"github.com/gtkit/go-rag-agent/internal/llm"
 )
 
+// StructuredOutputFormat 选择 AskStructured 使用的平台原生结构化输出格式。
+type StructuredOutputFormat string
+
+const (
+	// StructuredOutputJSONObject 在模型支持时以 json_object 响应格式请求，默认值。
+	StructuredOutputJSONObject StructuredOutputFormat = "json_object"
+	// StructuredOutputJSONSchema 在模型支持时把目标类型反射成 JSON Schema 并以 json_schema 响应格式请求。
+	StructuredOutputJSONSchema StructuredOutputFormat = "json_schema"
+	// StructuredOutputPrompt 只依赖提示词指令，不下发原生响应格式。
+	StructuredOutputPrompt StructuredOutputFormat = "prompt"
+)
+
 // StorageComponents 定义向量存储、文档加载和 rerank 的可选注入组件。
 type StorageComponents struct {
 	VectorStore    VectorStore
@@ -48,14 +60,20 @@ type Config struct {
 	EnableRerank                 bool
 	EnableWebSearch              bool
 	EnableToolCalling            bool
-	HybridCandidateMultiplier    int
-	HybridRRFK                   float64
-	RerankShortlistMultiplier    int
-	Runtime                      RuntimeComponents
-	Retrieval                    RetrievalComponents
-	Storage                      StorageComponents
-	Memory                       MemoryComponents
-	ProviderGovernance           ProviderGovernanceConfig
+	// ToolCallPolicy 在 tool calling 执行模型请求的每次工具调用前授权；nil 表示直接执行已注册工具。
+	ToolCallPolicy ToolCallPolicy
+	// StructuredOutputFormat 控制 AskStructured 的原生结构化输出模式，默认 json_object。
+	StructuredOutputFormat StructuredOutputFormat
+	// ReasoningEffort 非空时作为推理强度随每次模型请求下发（模型需实现 ToolCapableChatModel），取值由平台定义。
+	ReasoningEffort           string
+	HybridCandidateMultiplier int
+	HybridRRFK                float64
+	RerankShortlistMultiplier int
+	Runtime                   RuntimeComponents
+	Retrieval                 RetrievalComponents
+	Storage                   StorageComponents
+	Memory                    MemoryComponents
+	ProviderGovernance        ProviderGovernanceConfig
 	// DocumentConverters are optional pre-loader converters for files unsupported by the default loader.
 	DocumentConverters      []DocumentConverter
 	PromptCache             PromptCache
@@ -124,6 +142,9 @@ func (c Config) withDefaults() Config {
 	if c.RerankShortlistMultiplier == 0 {
 		c.RerankShortlistMultiplier = 2
 	}
+	if c.StructuredOutputFormat == "" {
+		c.StructuredOutputFormat = StructuredOutputJSONObject
+	}
 	return c
 }
 
@@ -135,6 +156,7 @@ func (c Config) normalized() Config {
 	c.EmbeddingBaseURL = strings.TrimSpace(c.EmbeddingBaseURL)
 	c.EmbeddingAPIKey = strings.TrimSpace(c.EmbeddingAPIKey)
 	c.DataDir = strings.TrimSpace(c.DataDir)
+	c.ReasoningEffort = strings.TrimSpace(c.ReasoningEffort)
 	c.PDFOCRBridge = c.PDFOCRBridge.normalized()
 	c.ImageTextBridge = c.ImageTextBridge.normalized()
 	c.WebSearch = c.WebSearch.normalized()
@@ -263,6 +285,11 @@ func (c Config) Validate() error {
 		if c.ToolRegistry == nil || len(c.ToolRegistry.Tools()) == 0 {
 			return fmt.Errorf("tool-calling requires at least one registered tool: %w", ErrInvalidConfig)
 		}
+	}
+	switch c.StructuredOutputFormat {
+	case StructuredOutputJSONObject, StructuredOutputJSONSchema, StructuredOutputPrompt:
+	default:
+		return fmt.Errorf("structured output format %q is unsupported: %w", c.StructuredOutputFormat, ErrInvalidConfig)
 	}
 	if c.EnableRerank && !c.EnableHybridSearch {
 		return fmt.Errorf("enable rerank requires hybrid search: %w", ErrInvalidConfig)

@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
+
+	"github.com/gtkit/go-rag-agent/internal/llm"
 )
 
 // StructuredAnswer 表示一次结构化问答结果。
@@ -39,14 +42,13 @@ func describeStructuredType(t reflect.Type) string {
 	switch t.Kind() {
 	case reflect.Struct:
 		fields := make([]string, 0, t.NumField())
-		for i := 0; i < t.NumField(); i++ {
-			field := t.Field(i)
+		for field := range t.Fields() {
 			if !field.IsExported() {
 				continue
 			}
 			name := field.Name
 			if tag, ok := field.Tag.Lookup("json"); ok {
-				tagName := strings.Split(tag, ",")[0]
+				tagName, _, _ := strings.Cut(tag, ",")
 				switch tagName {
 				case "-":
 					continue
@@ -161,4 +163,100 @@ func unmarshalStructuredJSON(raw string, target any) error {
 		return fmt.Errorf("unmarshal structured output: %w: %w", err, ErrStructuredOutputInvalid)
 	}
 	return nil
+}
+
+// structuredResponseFormat 按配置为 target 构造原生响应格式；prompt 模式返回 nil。
+// 调用前 target 已通过 validateStructuredTarget。
+func structuredResponseFormat(format StructuredOutputFormat, target any) *llm.ResponseFormat {
+	switch format {
+	case StructuredOutputJSONSchema:
+		targetType := reflect.TypeOf(target).Elem()
+		name := targetType.Name()
+		if name == "" {
+			name = "response"
+		}
+		return &llm.ResponseFormat{
+			Type:   llm.ResponseFormatJSONSchema,
+			Name:   name,
+			Schema: jsonSchemaForType(targetType, map[reflect.Type]bool{}),
+		}
+	case StructuredOutputPrompt:
+		return nil
+	default:
+		return &llm.ResponseFormat{Type: llm.ResponseFormatJSONObject}
+	}
+}
+
+var timeType = reflect.TypeFor[time.Time]()
+
+// jsonSchemaForType 把 Go 类型反射为 JSON Schema。visiting 记录当前递归栈上的结构体，
+// 自引用类型在第二次遇到时退化为无约束对象，避免无限递归。
+func jsonSchemaForType(t reflect.Type, visiting map[reflect.Type]bool) map[string]any {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == timeType {
+		return map[string]any{"type": "string", "format": "date-time"}
+	}
+	switch t.Kind() {
+	case reflect.Struct:
+		if visiting[t] {
+			return map[string]any{"type": "object"}
+		}
+		visiting[t] = true
+		defer delete(visiting, t)
+		properties := map[string]any{}
+		required := make([]string, 0, t.NumField())
+		for field := range t.Fields() {
+			if !field.IsExported() {
+				continue
+			}
+			name := field.Name
+			optional := field.Type.Kind() == reflect.Pointer
+			if tag, ok := field.Tag.Lookup("json"); ok {
+				parts := strings.Split(tag, ",")
+				if parts[0] == "-" {
+					continue
+				}
+				if parts[0] != "" {
+					name = parts[0]
+				}
+				for _, opt := range parts[1:] {
+					if opt == "omitempty" {
+						optional = true
+					}
+				}
+			}
+			properties[name] = jsonSchemaForType(field.Type, visiting)
+			if !optional {
+				required = append(required, name)
+			}
+		}
+		schema := map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
+		if len(required) > 0 {
+			schema["required"] = required
+		}
+		return schema
+	case reflect.Slice, reflect.Array:
+		if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
+			return map[string]any{"type": "string"}
+		}
+		return map[string]any{"type": "array", "items": jsonSchemaForType(t.Elem(), visiting)}
+	case reflect.Map:
+		if t.Key().Kind() == reflect.String {
+			return map[string]any{"type": "object", "additionalProperties": jsonSchemaForType(t.Elem(), visiting)}
+		}
+		return map[string]any{"type": "object"}
+	case reflect.String:
+		return map[string]any{"type": "string"}
+	case reflect.Bool:
+		return map[string]any{"type": "boolean"}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return map[string]any{"type": "integer"}
+	case reflect.Float32, reflect.Float64:
+		return map[string]any{"type": "number"}
+	default:
+		return map[string]any{}
+	}
 }

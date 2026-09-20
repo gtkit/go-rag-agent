@@ -21,6 +21,8 @@ var (
 	ErrToolCallInvalid = errors.New("ragagent: tool call invalid")
 	// ErrToolArgumentInvalid indicates structured tool arguments failed validation.
 	ErrToolArgumentInvalid = errors.New("ragagent: tool argument invalid")
+	// ErrToolCallDenied indicates ToolCallPolicy rejected a model-requested tool call.
+	ErrToolCallDenied = errors.New("ragagent: tool call denied")
 	// ErrStructuredOutputTarget indicates structured output target is invalid.
 	ErrStructuredOutputTarget = errors.New("ragagent: structured output target is invalid")
 	// ErrStructuredOutputInvalid indicates model output could not be parsed into structured JSON.

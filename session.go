@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/gtkit/go-rag-agent/internal/memory"
 	"github.com/gtkit/go-rag-agent/internal/storage"
@@ -60,7 +61,7 @@ func (s *Session) AskWithOptions(ctx context.Context, query string, opts QueryOp
 	answer, err := s.agent.askLocked(ctx, s, query, opts)
 	s.endExecution(query, answer.Text, err == nil)
 	if err != nil {
-		return Answer{}, err
+		return Answer{}, s.joinPendingHistoryClear(ctx, err)
 	}
 	return answer, nil
 }
@@ -98,7 +99,7 @@ func (s *Session) AskStructuredWithOptions(ctx context.Context, query string, op
 	answer, err := s.agent.askStructuredLocked(ctx, s, query, opts, target)
 	s.endExecution(query, answer.Answer.Text, err == nil)
 	if err != nil {
-		return answer, err
+		return answer, s.joinPendingHistoryClear(ctx, err)
 	}
 	return answer, nil
 }
@@ -131,25 +132,137 @@ func (s *Session) AskStreamWithOptions(ctx context.Context, query string, opts Q
 	}
 	answerText, err := s.agent.askStreamLocked(ctx, s, query, opts, emit)
 	s.endExecution(query, answerText, err == nil)
-	return err
+	if err != nil {
+		return s.joinPendingHistoryClear(ctx, err)
+	}
+	return nil
 }
 
 // ClearHistory 清空当前 Session 的历史对话。
 func (s *Session) ClearHistory(ctx context.Context) error {
+	store := s.historyStore()
+	clearNow, err := s.markHistoryClear(ctx, store == nil)
+	if err != nil || !clearNow {
+		return err
+	}
+	// 外部存储的清空放在锁外执行，避免网络 I/O 阻塞同 Session 的状态操作。
+	if err := store.Clear(ctx, s.id); err != nil {
+		return fmt.Errorf("clear session history: %w", err)
+	}
+	return nil
+}
+
+// markHistoryClear 在锁内决定清空方式：执行中则挂起为 pendingClear；进程内模式直接清空；
+// 外部存储模式返回 clearNow=true 交给调用方在锁外执行。
+func (s *Session) markHistoryClear(ctx context.Context, local bool) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 	if s.closed {
-		return ErrSessionClosed
+		return false, ErrSessionClosed
 	}
 	if s.executing {
 		s.pendingClear = true
+		return false, nil
+	}
+	if local {
+		s.history.Clear()
+		return false, nil
+	}
+	return true, nil
+}
+
+// historyStore 返回配置的外部历史存储；Session 未绑定 Agent 时视为进程内模式。
+func (s *Session) historyStore() HistoryStore {
+	if s.agent == nil {
 		return nil
 	}
-	s.history.Clear()
+	return s.agent.cfg.Memory.HistoryStore
+}
+
+// loadHistory 返回本次问答使用的历史：配置了 HistoryStore 时从外部加载并截取最近 MaxHistoryRounds 轮，
+// 否则使用进程内历史。外部加载失败按 HistoryFailurePolicy 处理并记入 trace。
+func (s *Session) loadHistory(ctx context.Context, trace *executionTraceBuilder) ([]memory.Turn, error) {
+	store := s.historyStore()
+	if store == nil {
+		return s.history.Turns(), nil
+	}
+	startedAt := time.Now()
+	stored, err := store.Load(ctx, s.id)
+	trace.addMemory("history_load", startedAt, err)
+	if err != nil {
+		if s.agent.cfg.Memory.HistoryFailurePolicy == MemoryFailurePolicyFailOpen {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load session history: %w", err)
+	}
+	if limit := s.agent.cfg.MaxHistoryRounds; limit > 0 && len(stored) > limit {
+		stored = stored[len(stored)-limit:]
+	}
+	turns := make([]memory.Turn, 0, len(stored))
+	for _, turn := range stored {
+		turns = append(turns, memory.Turn{User: turn.User, Assistant: turn.Assistant})
+	}
+	return turns, nil
+}
+
+// commitHistory 在问答成功后把本轮写回外部存储；执行期间调用过 ClearHistory 时改为清空并丢弃本轮，
+// 与进程内历史的 pendingClear 语义一致。进程内模式由 endExecution 负责，此处不做事。
+func (s *Session) commitHistory(ctx context.Context, query string, answer string, trace *executionTraceBuilder) error {
+	store := s.historyStore()
+	if store == nil {
+		return nil
+	}
+	s.mu.Lock()
+	clear := s.pendingClear
+	s.pendingClear = false
+	s.mu.Unlock()
+
+	startedAt := time.Now()
+	operation := "history_append"
+	var err error
+	if clear {
+		operation = "history_clear"
+		err = store.Clear(ctx, s.id)
+	} else {
+		err = store.Append(ctx, s.id, HistoryTurn{User: query, Assistant: answer})
+	}
+	trace.addMemory(operation, startedAt, err)
+	if err == nil || s.agent.cfg.Memory.HistoryFailurePolicy == MemoryFailurePolicyFailOpen {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", operation, err)
+}
+
+// joinPendingHistoryClear 在执行失败后处理挂起的 ClearHistory（外部存储模式）；
+// 清空成功时原样返回执行错误，保持调用方对错误类型的判断不变。
+func (s *Session) joinPendingHistoryClear(ctx context.Context, err error) error {
+	if clearErr := s.flushPendingHistoryClear(ctx); clearErr != nil {
+		return errors.Join(err, clearErr)
+	}
+	return err
+}
+
+func (s *Session) flushPendingHistoryClear(ctx context.Context) error {
+	store := s.historyStore()
+	if store == nil {
+		return nil
+	}
+	s.mu.Lock()
+	clear := s.pendingClear && !s.executing
+	if clear {
+		s.pendingClear = false
+	}
+	s.mu.Unlock()
+	if !clear {
+		return nil
+	}
+	if err := store.Clear(ctx, s.id); err != nil {
+		return fmt.Errorf("clear session history: %w", err)
+	}
 	return nil
 }
 
@@ -210,12 +323,14 @@ func (s *Session) endExecution(query string, answer string, appendHistory bool) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if appendHistory {
-		s.history.Append(query, answer)
-	}
-	if s.pendingClear {
-		s.history.Clear()
-		s.pendingClear = false
+	if s.historyStore() == nil {
+		if appendHistory {
+			s.history.Append(query, answer)
+		}
+		if s.pendingClear {
+			s.history.Clear()
+			s.pendingClear = false
+		}
 	}
 	if s.pendingClose {
 		s.closed = true

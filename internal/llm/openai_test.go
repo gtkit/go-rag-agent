@@ -362,13 +362,13 @@ func TestOpenAIEmbedderEmbedTextsFailFastValidation(t *testing.T) {
 			name:      "non-empty reaches nil-client guard",
 			texts:     []string{"  hello  "},
 			wantErr:   true,
-			errPrefix: "openai embedder is nil",
+			errPrefix: "embedder provider is nil",
 		},
 		{
 			name:      "nil receiver reaches nil-client guard",
 			texts:     []string{"hello"},
 			wantErr:   true,
-			errPrefix: "openai embedder is nil",
+			errPrefix: "embedder provider is nil",
 		},
 	}
 
@@ -377,9 +377,9 @@ func TestOpenAIEmbedderEmbedTextsFailFastValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			var embedder *OpenAIEmbedder
+			var embedder *ProviderEmbedder
 			if tc.name != "nil receiver reaches nil-client guard" {
-				embedder = &OpenAIEmbedder{}
+				embedder = &ProviderEmbedder{}
 			}
 			_, err := embedder.EmbedTexts(t.Context(), tc.texts)
 			if tc.wantErr && err == nil {
@@ -414,17 +414,17 @@ func TestOpenAIChatModelFailFastAndMessageConversion(t *testing.T) {
 		{
 			name: "generate rejects nil client",
 			run: func() error {
-				_, err := (&OpenAIChatModel{}).Generate(context.Background(), []Message{{Role: RoleUser, Content: "hello"}})
+				_, err := (&ProviderChatModel{}).Generate(context.Background(), []Message{{Role: RoleUser, Content: "hello"}})
 				return err
 			},
-			wantErr: "openai chat model is nil",
+			wantErr: "chat model provider is nil",
 		},
 		{
 			name: "stream rejects nil client",
 			run: func() error {
-				return (&OpenAIChatModel{}).Stream(context.Background(), []Message{{Role: RoleUser, Content: "hello"}}, func(string) error { return nil })
+				return (&ProviderChatModel{}).Stream(context.Background(), []Message{{Role: RoleUser, Content: "hello"}}, func(string) error { return nil })
 			},
-			wantErr: "openai chat model is nil",
+			wantErr: "chat model provider is nil",
 		},
 	}
 

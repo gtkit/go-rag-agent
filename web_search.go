@@ -69,12 +69,6 @@ func newWebSearcher(cfg Config, governors *providerGovernors) websearch.Searcher
 
 	searchCfg := cfg.WebSearch.normalized()
 	httpClient := httpc.New(httpc.WithTimeout(cfg.RequestTimeout))
-	if cfg.Logger != nil {
-		httpClient = httpc.New(
-			httpc.WithTimeout(cfg.RequestTimeout),
-			httpc.WithLogger(cfg.Logger),
-		)
-	}
 	searcher := websearch.NewTavilyClient(httpClient, websearch.TavilyConfig{
 		BaseURL:     searchCfg.BaseURL,
 		APIKey:      searchCfg.APIKey,

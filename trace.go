@@ -97,8 +97,9 @@ type TraceRecorder interface {
 }
 
 type executionTraceBuilder struct {
-	trace     ExecutionTrace
-	toolIndex map[string]int
+	trace ExecutionTrace
+	// toolIndex 按工具名保存尚未结束的调用在 ToolCalls 中的下标栈，同名工具嵌套或并发调用也能正确配对。
+	toolIndex map[string][]int
 }
 
 func newExecutionTraceBuilder(sessionID string, query string, rewrittenQuery string, filter RetrievalFilter, stream bool) *executionTraceBuilder {
@@ -115,7 +116,7 @@ func newExecutionTraceBuilder(sessionID string, query string, rewrittenQuery str
 			StartedAt: time.Now(),
 			Stream:    stream,
 		},
-		toolIndex: make(map[string]int),
+		toolIndex: make(map[string][]int),
 	}
 }
 
@@ -127,19 +128,25 @@ func (b *executionTraceBuilder) startTool(name string) {
 		Name:      name,
 		StartedAt: time.Now(),
 	})
-	b.toolIndex[name] = len(b.trace.ToolCalls) - 1
+	b.toolIndex[name] = append(b.toolIndex[name], len(b.trace.ToolCalls)-1)
 }
 
+// endTool 结束最近一次开始的同名调用；没有开始记录（未知工具、参数无效、授权拒绝等执行前失败）时
+// 补一条起止时间相同的记录，保证失败也进入 trace。
 func (b *executionTraceBuilder) endTool(name string, err error) {
 	if b == nil {
 		return
 	}
-	idx, ok := b.toolIndex[name]
-	if !ok || idx >= len(b.trace.ToolCalls) {
+	now := time.Now()
+	stack := b.toolIndex[name]
+	if len(stack) == 0 {
+		b.trace.ToolCalls = append(b.trace.ToolCalls, ToolTrace{Name: name, StartedAt: now, FinishedAt: now, Err: err})
 		return
 	}
-	b.trace.ToolCalls[idx].FinishedAt = time.Now()
-	b.trace.ToolCalls[idx].Duration = b.trace.ToolCalls[idx].FinishedAt.Sub(b.trace.ToolCalls[idx].StartedAt)
+	idx := stack[len(stack)-1]
+	b.toolIndex[name] = stack[:len(stack)-1]
+	b.trace.ToolCalls[idx].FinishedAt = now
+	b.trace.ToolCalls[idx].Duration = now.Sub(b.trace.ToolCalls[idx].StartedAt)
 	b.trace.ToolCalls[idx].Err = err
 }
 

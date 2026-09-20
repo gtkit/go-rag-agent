@@ -238,11 +238,14 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.Memory.ProviderFailurePolicy == "" {
 		cfg.Memory.ProviderFailurePolicy = MemoryFailurePolicyFailClosed
 	}
+	if cfg.Memory.HistoryFailurePolicy == "" {
+		cfg.Memory.HistoryFailurePolicy = MemoryFailurePolicyFailClosed
+	}
 	governors := newProviderGovernors(cfg.ProviderGovernance, cfg.Logger)
 
 	embedder := cfg.Runtime.Embedder
 	if embedder == nil {
-		embedder, err = llm.NewOpenAIEmbedder(ctx, llm.EmbeddingConfig{
+		defaultEmbedder, err := llm.NewOpenAIEmbedder(ctx, llm.EmbeddingConfig{
 			Model:   cfg.EmbeddingModel,
 			BaseURL: firstNonEmpty(cfg.EmbeddingBaseURL, cfg.ChatBaseURL),
 			APIKey:  firstNonEmpty(cfg.EmbeddingAPIKey, cfg.ChatAPIKey),
@@ -252,12 +255,13 @@ func New(cfg Config) (*Agent, error) {
 			_ = store.Close()
 			return nil, fmt.Errorf("create embedder: %w", err)
 		}
+		embedder = defaultEmbedder
 	}
 	embedder = newResilientEmbedder(embedder, cfg.ProviderGovernance, governors.forProvider("openai"), "openai", cfg.EmbeddingModel)
 
 	chatModel := cfg.Runtime.ChatModel
 	if chatModel == nil {
-		chatModel, err = llm.NewOpenAIChatModel(ctx, llm.ChatConfig{
+		defaultChatModel, err := llm.NewOpenAIChatModel(ctx, llm.ChatConfig{
 			Model:   cfg.ChatModel,
 			BaseURL: cfg.ChatBaseURL,
 			APIKey:  cfg.ChatAPIKey,
@@ -267,6 +271,7 @@ func New(cfg Config) (*Agent, error) {
 			_ = store.Close()
 			return nil, fmt.Errorf("create chat model: %w", err)
 		}
+		chatModel = defaultChatModel
 	}
 	chatModel = newResilientChatModel(chatModel, cfg.ProviderGovernance, governors.forProvider("openai"), "openai", cfg.ChatModel)
 
@@ -324,6 +329,7 @@ func New(cfg Config) (*Agent, error) {
 		runner, err = NewToolCallingRunner(chatModel, toolRegistry, ToolCallingRunnerConfig{
 			MaxToolCalls:  cfg.MaxToolCalls,
 			MaxIterations: cfg.MaxIterations,
+			Policy:        cfg.ToolCallPolicy,
 		})
 		if err != nil {
 			_ = store.Close()
@@ -597,7 +603,6 @@ func (a *Agent) recordExecutionTrace(ctx context.Context, s *Session, trace Exec
 	}
 
 	for _, fallback := range trace.Fallbacks {
-		fallback := fallback
 		if err := a.runTelemetryCallback(s, func() {
 			a.cfg.Logger.Warn("ragagent fallback",
 				"session_id", trace.SessionID,
@@ -671,7 +676,6 @@ func (a *Agent) newGraphToolObserver(s *Session, trace *executionTraceBuilder, c
 				}
 				if tool == "search_web" && collector != nil {
 					for _, citation := range collector.DrainNewCitations() {
-						citation := citation
 						if streamErr := emit(StreamEvent{Type: EventCitation, Citation: &citation}); streamErr != nil {
 							return streamErr
 						}
@@ -820,7 +824,7 @@ func citationsFromHits(hits []storage.SearchHit) []Citation {
 }
 
 func (a *Agent) askLocked(ctx context.Context, s *Session, query string, opts QueryOptions) (answer Answer, err error) {
-	return a.askWithFormatLocked(ctx, s, query, opts, "")
+	return a.askWithFormatLocked(ctx, s, query, opts, "", nil)
 }
 
 func (a *Agent) askStructuredLocked(ctx context.Context, s *Session, query string, opts QueryOptions, target any) (StructuredAnswer, error) {
@@ -828,7 +832,7 @@ func (a *Agent) askStructuredLocked(ctx context.Context, s *Session, query strin
 	if err != nil {
 		return StructuredAnswer{}, err
 	}
-	answer, err := a.askWithFormatLocked(ctx, s, query, opts, responseFormatInstruction)
+	answer, err := a.askWithFormatLocked(ctx, s, query, opts, responseFormatInstruction, structuredResponseFormat(a.cfg.StructuredOutputFormat, target))
 	if err != nil {
 		return StructuredAnswer{Answer: answer}, err
 	}
@@ -848,15 +852,14 @@ func (a *Agent) askStructuredLocked(ctx context.Context, s *Session, query strin
 	}, nil
 }
 
-func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query string, opts QueryOptions, responseFormatInstruction string) (answer Answer, err error) {
+func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query string, opts QueryOptions, responseFormatInstruction string, responseFormat *llm.ResponseFormat) (answer Answer, err error) {
 	ctx, cancel := a.withExecutionBudget(ctx)
 	defer cancel()
 	if err = ctx.Err(); err != nil {
 		return Answer{}, err
 	}
 
-	rewrittenQuery := rag.RewriteFollowUp(query, s.history.LastUserQueries())
-	trace := newExecutionTraceBuilder(s.id, query, rewrittenQuery, opts.Filter, false)
+	trace := newExecutionTraceBuilder(s.id, query, query, opts.Filter, false)
 	ctx = withProviderTraceObserver(ctx, func(call ProviderCallTrace) {
 		trace.addProviderCall(call)
 	})
@@ -879,6 +882,13 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 		}
 	}()
 
+	history, err := s.loadHistory(ctx, trace)
+	if err != nil {
+		return Answer{}, err
+	}
+	rewrittenQuery := rag.RewriteFollowUp(query, userQueries(history))
+	trace.trace.RewrittenQuery = rewrittenQuery
+
 	filter, err := a.accessBoundaryFilter(ctx, s.id, rewrittenQuery, opts)
 	if err != nil {
 		return Answer{}, err
@@ -896,7 +906,7 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 			return Answer{}, err
 		}
 	}
-	longTermMemoryText, err := a.retrieveMemoryText(ctx, s, rewrittenQuery, opts, trace)
+	longTermMemoryText, err := a.retrieveMemoryText(ctx, s, rewrittenQuery, history, opts, trace)
 	err = normalizeExecutionBudgetError(ctx, err)
 	if err != nil {
 		return Answer{}, err
@@ -911,7 +921,8 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 	}
 	answerText, err := a.runner.Ask(ctx, graph.Request{
 		Query:                     rewrittenQuery,
-		History:                   s.history.Turns(),
+		History:                   history,
+		ReasoningEffort:           a.cfg.ReasoningEffort,
 		EvidenceText:              evidenceText,
 		LongTermMemoryText:        longTermMemoryText,
 		MaxPromptTokens:           a.cfg.MaxPromptTokens,
@@ -923,6 +934,7 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 		PromptCache:               rootToGraphPromptCache{inner: a.cfg.PromptCache},
 		PromptCacheObserver:       trace.setPromptCacheHit,
 		ResponseFormatInstruction: responseFormatInstruction,
+		ResponseFormat:            responseFormat,
 		ToolObserver:              a.newGraphToolObserver(s, trace, webCollector, nil),
 		ToolCallLimiter:           budget,
 	})
@@ -957,6 +969,9 @@ func (a *Agent) askWithFormatLocked(ctx context.Context, s *Session, query strin
 	if err := a.storeMemory(ctx, s.id, query, answerText, opts, trace); err != nil {
 		return Answer{}, err
 	}
+	if err := s.commitHistory(ctx, query, answerText, trace); err != nil {
+		return Answer{}, err
+	}
 	return Answer{
 		Text:      answerText,
 		Citations: citations,
@@ -973,7 +988,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 		return "", fmt.Errorf("stream emitter is required")
 	}
 
-	trace := newExecutionTraceBuilder(s.id, query, rag.RewriteFollowUp(query, s.history.LastUserQueries()), opts.Filter, true)
+	trace := newExecutionTraceBuilder(s.id, query, query, opts.Filter, true)
 	ctx = withProviderTraceObserver(ctx, func(call ProviderCallTrace) {
 		trace.addProviderCall(call)
 	})
@@ -1004,7 +1019,12 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 		return runErr
 	}
 
-	rewrittenQuery := trace.trace.RewrittenQuery
+	history, err := s.loadHistory(ctx, trace)
+	if err != nil {
+		return "", emitError(err)
+	}
+	rewrittenQuery := rag.RewriteFollowUp(query, userQueries(history))
+	trace.trace.RewrittenQuery = rewrittenQuery
 	filter, err := a.accessBoundaryFilter(ctx, s.id, rewrittenQuery, opts)
 	if err != nil {
 		return "", err
@@ -1035,7 +1055,7 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 			return "", emitError(err)
 		}
 	}
-	longTermMemoryText, err := a.retrieveMemoryText(ctx, s, rewrittenQuery, opts, trace)
+	longTermMemoryText, err := a.retrieveMemoryText(ctx, s, rewrittenQuery, history, opts, trace)
 	err = normalizeExecutionBudgetError(ctx, err)
 	if err != nil {
 		return "", err
@@ -1067,7 +1087,8 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 	}
 	err = a.runner.AskStream(ctx, graph.Request{
 		Query:                 rewrittenQuery,
-		History:               s.history.Turns(),
+		History:               history,
+		ReasoningEffort:       a.cfg.ReasoningEffort,
 		EvidenceText:          evidenceText,
 		LongTermMemoryText:    longTermMemoryText,
 		MaxPromptTokens:       a.cfg.MaxPromptTokens,
@@ -1138,8 +1159,19 @@ func (a *Agent) askStreamLocked(ctx context.Context, s *Session, query string, o
 	if err := a.storeMemory(ctx, s.id, query, answerBuilder.String(), opts, trace); err != nil {
 		return "", err
 	}
+	if err := s.commitHistory(ctx, query, answerBuilder.String(), trace); err != nil {
+		return "", err
+	}
 
 	return answerBuilder.String(), nil
+}
+
+func userQueries(turns []memory.Turn) []string {
+	queries := make([]string, 0, len(turns))
+	for _, turn := range turns {
+		queries = append(queries, turn.User)
+	}
+	return queries
 }
 
 func safeLexicalSearch(query string, candidates []storage.SearchHit, topK int) (hits []storage.SearchHit, err error) {
@@ -1298,7 +1330,7 @@ func (a *Agent) retrieveLongTermMemory(ctx context.Context, sessionID string, qu
 	return builder.String(), nil
 }
 
-func (a *Agent) retrieveMemoryText(ctx context.Context, s *Session, query string, opts QueryOptions, trace *executionTraceBuilder) (string, error) {
+func (a *Agent) retrieveMemoryText(ctx context.Context, s *Session, query string, history []memory.Turn, opts QueryOptions, trace *executionTraceBuilder) (string, error) {
 	if a.cfg.Memory.Provider == nil {
 		return a.retrieveLongTermMemory(ctx, s.id, query, opts)
 	}
@@ -1308,7 +1340,7 @@ func (a *Agent) retrieveMemoryText(ctx context.Context, s *Session, query string
 		SessionID: s.id,
 		Query:     query,
 		Scope:     scope,
-		History:   turnsToMessages(s.history.Turns()),
+		History:   turnsToMessages(history),
 	})
 	if trace != nil {
 		trace.addMemory("retrieve", startedAt, err)

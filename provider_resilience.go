@@ -31,20 +31,61 @@ type resilientChatModel struct {
 	model      string
 }
 
+// resilientToolCapableChatModel 在内层模型支持原生工具协议时保留该能力，四个方法共用同一套治理循环。
+type resilientToolCapableChatModel struct {
+	*resilientChatModel
+	inner llm.ToolCapableChatModel
+}
+
 func newResilientChatModel(inner llm.ChatModel, governance ProviderGovernanceConfig, governor *providerGovernor, providerName string, model string) llm.ChatModel {
 	if inner == nil {
 		return nil
 	}
-	return &resilientChatModel{
+	base := &resilientChatModel{
 		inner:      inner,
 		governance: governance.normalized(),
 		governor:   governor,
 		provider:   providerName,
 		model:      model,
 	}
+	if capable, ok := inner.(llm.ToolCapableChatModel); ok {
+		return &resilientToolCapableChatModel{resilientChatModel: base, inner: capable}
+	}
+	return base
 }
 
 func (m *resilientChatModel) Generate(ctx context.Context, input []llm.Message) (llm.Message, error) {
+	return m.generate(ctx, func(ctx context.Context) (llm.Message, error) {
+		return m.inner.Generate(ctx, input)
+	})
+}
+
+func (m *resilientChatModel) Stream(ctx context.Context, input []llm.Message, emit func(string) error) error {
+	_, err := m.stream(ctx, emit, func(ctx context.Context, emit func(string) error) (llm.Message, error) {
+		return llm.Message{}, m.inner.Stream(ctx, input, emit)
+	})
+	return err
+}
+
+func (m *resilientToolCapableChatModel) GenerateWithOptions(ctx context.Context, input []llm.Message, opts llm.GenerateOptions) (llm.Message, error) {
+	return m.generate(ctx, func(ctx context.Context) (llm.Message, error) {
+		return m.inner.GenerateWithOptions(ctx, input, opts)
+	})
+}
+
+// Stream 经 StreamWithOptions 执行，使流式调用也能拿到 usage 进入 provider trace。
+func (m *resilientToolCapableChatModel) Stream(ctx context.Context, input []llm.Message, emit func(string) error) error {
+	_, err := m.StreamWithOptions(ctx, input, llm.GenerateOptions{}, emit)
+	return err
+}
+
+func (m *resilientToolCapableChatModel) StreamWithOptions(ctx context.Context, input []llm.Message, opts llm.GenerateOptions, emit func(string) error) (llm.Message, error) {
+	return m.stream(ctx, emit, func(ctx context.Context, emit func(string) error) (llm.Message, error) {
+		return m.inner.StreamWithOptions(ctx, input, opts, emit)
+	})
+}
+
+func (m *resilientChatModel) generate(ctx context.Context, call func(context.Context) (llm.Message, error)) (llm.Message, error) {
 	var (
 		lastErr  error
 		attempts int
@@ -74,7 +115,7 @@ func (m *resilientChatModel) Generate(ctx context.Context, input []llm.Message) 
 			})
 			return llm.Message{}, lastErr
 		}
-		message, lastErr = m.inner.Generate(ctx, input)
+		message, lastErr = call(ctx)
 		class := classifyProviderError(lastErr, m.provider)
 		handle.finish(class)
 		if lastErr == nil || !shouldRetryProviderError(class) || attempts == m.governance.RetryMaxAttempts {
@@ -103,7 +144,8 @@ func (m *resilientChatModel) Generate(ctx context.Context, input []llm.Message) 
 	return message, lastErr
 }
 
-func (m *resilientChatModel) Stream(ctx context.Context, input []llm.Message, emit func(string) error) error {
+// stream 在首个非空 chunk 已发出后不再重试，避免调用方收到重复的答案前缀。
+func (m *resilientChatModel) stream(ctx context.Context, emit func(string) error, call func(context.Context, func(string) error) (llm.Message, error)) (llm.Message, error) {
 	var (
 		lastErr   error
 		attempts  int
@@ -111,6 +153,7 @@ func (m *resilientChatModel) Stream(ctx context.Context, input []llm.Message, em
 		chunkSeen bool
 		throttle  time.Duration
 		state     string
+		message   llm.Message
 	)
 	for attempts = 1; attempts <= m.governance.RetryMaxAttempts; attempts++ {
 		chunkSeen = false
@@ -130,9 +173,9 @@ func (m *resilientChatModel) Stream(ctx context.Context, input []llm.Message, em
 				ErrorClass:    classifyProviderError(lastErr, m.provider),
 				Err:           lastErr,
 			})
-			return lastErr
+			return llm.Message{}, lastErr
 		}
-		lastErr = m.inner.Stream(ctx, input, func(chunk string) error {
+		message, lastErr = call(ctx, func(chunk string) error {
 			if strings.TrimSpace(chunk) != "" {
 				chunkSeen = true
 			}
@@ -141,24 +184,29 @@ func (m *resilientChatModel) Stream(ctx context.Context, input []llm.Message, em
 		class := classifyProviderError(lastErr, m.provider)
 		handle.finish(class)
 		if lastErr == nil || chunkSeen || !shouldRetryProviderError(class) || attempts == m.governance.RetryMaxAttempts {
+			usage := generationInfoUsage(message.GenerationInfo)
 			emitProviderTrace(ctx, ProviderCallTrace{
-				Provider:      m.provider,
-				Operation:     "chat_stream",
-				Model:         m.model,
-				Attempts:      attempts,
-				Duration:      time.Since(started),
-				ThrottleDelay: throttle,
-				CircuitState:  state,
-				ErrorClass:    class,
-				Err:           lastErr,
+				Provider:         m.provider,
+				Operation:        "chat_stream",
+				Model:            m.model,
+				Attempts:         attempts,
+				Duration:         time.Since(started),
+				ThrottleDelay:    throttle,
+				CircuitState:     state,
+				ErrorClass:       class,
+				InputTokens:      usage.PromptTokens,
+				OutputTokens:     usage.CompletionTokens,
+				TotalTokens:      usage.TotalTokens,
+				EstimatedCostUSD: estimateChatCost(m.governance, m.model, usage.PromptTokens, usage.CompletionTokens),
+				Err:              lastErr,
 			})
-			return lastErr
+			return message, lastErr
 		}
 		if err := sleepWithBackoff(ctx, m.governance, attempts); err != nil {
-			return err
+			return llm.Message{}, err
 		}
 	}
-	return lastErr
+	return message, lastErr
 }
 
 type resilientEmbedder struct {
