@@ -13,10 +13,12 @@ run_golangci_lint() {
 	go run github.com/golangci/golangci-lint/cmd/golangci-lint@latest run ./...
 }
 
-if [ -d openspec/changes/refresh-sdk-positioning-assets ]; then
-	openspec validate "refresh-sdk-positioning-assets" --type change --strict --json --no-interactive
+if [ -d openspec ]; then
+	if [ -d openspec/changes/refresh-sdk-positioning-assets ]; then
+		openspec validate "refresh-sdk-positioning-assets" --type change --strict --json --no-interactive
+	fi
+	openspec validate "sdk-positioning-assets" --type spec --strict --json --no-interactive
 fi
-openspec validate "sdk-positioning-assets" --type spec --strict --json --no-interactive
 go vet ./...
 run_golangci_lint
 go test -race -count=1 -timeout=5m ./...
