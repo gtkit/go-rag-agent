@@ -292,7 +292,7 @@ func writeJSON(path string, value any) error {
 	if err != nil {
 		return fmt.Errorf("marshal json %q: %w", path, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("mkdir json dir %q: %w", path, err)
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {

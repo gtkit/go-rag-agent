@@ -252,7 +252,7 @@ func WriteEvalReportJSON(path string, report EvalReport) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("mkdir eval report dir: %w", err)
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {

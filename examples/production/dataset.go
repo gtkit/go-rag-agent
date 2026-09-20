@@ -44,7 +44,7 @@ func MaterializeKnowledge(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read embedded knowledge: %w", err)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", fmt.Errorf("mkdir knowledge dir %q: %w", dir, err)
 	}
 	for _, entry := range entries {

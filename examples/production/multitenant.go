@@ -37,7 +37,7 @@ type tenantDoc struct {
 // writeTenantKnowledge 把某租户的知识写到 root/<tenant> 下，返回该租户的 source 前缀。
 func writeTenantKnowledge(root, tenant string, docs []tenantDoc) (string, error) {
 	dir := filepath.Join(root, tenant)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", fmt.Errorf("mkdir tenant dir %q: %w", dir, err)
 	}
 	for _, doc := range docs {

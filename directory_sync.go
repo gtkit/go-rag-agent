@@ -104,7 +104,7 @@ func (s *directorySyncState) persist(roots map[string][]string) error {
 	if s.manifestPath == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(s.manifestPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.manifestPath), 0o750); err != nil {
 		return fmt.Errorf("mkdir directory sync manifest dir: %w", err)
 	}
 
