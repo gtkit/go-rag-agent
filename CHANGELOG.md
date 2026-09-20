@@ -9,6 +9,8 @@
 
 ## [Unreleased]
 
+## [v0.10.0] - 2026-09-20
+
 ### Added
 - 平台原生模型协议：
   - `ToolCapableChatModel` 扩展接口、`GenerateOptions`、`ToolDefinition`、`ToolCall`、`ResponseFormat`、`RoleTool`
