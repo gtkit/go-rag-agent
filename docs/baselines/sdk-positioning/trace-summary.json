@@ -7,9 +7,12 @@
   "RetrievalHitCount": 1,
   "ToolCallCount": 1,
   "ProviderCallCount": 2,
+  "MemoryEventCount": 0,
   "CitationCount": 1,
   "FallbackCount": 0,
   "PromptCacheHit": false,
   "TotalEstimatedCostUSD": 0,
+  "Refused": false,
+  "RefusalReason": "",
   "Err": ""
 }

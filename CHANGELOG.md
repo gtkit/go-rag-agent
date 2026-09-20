@@ -24,7 +24,6 @@
   - `NewRedisHistoryStore(client, cfg)`：Redis List 实现，支持 `MaxRounds` 截断与 `TTL`
   - 历史加载 / 写回 / 清空以 `history_load` / `history_append` / `history_clear` 记入 `ExecutionTrace.Memory`
 - `Config.ReasoningEffort` / `GenerateOptions.ReasoningEffort`：推理强度透传到平台
-- OpenSpec 变更 `add-native-tool-calling-and-structured-output`、`externalize-history-and-reasoning-controls`
 
 ### Changed
 - 纯文本 `Tool` 在模型驱动调用下的参数约定为 `{"input": string}`，运行时把 `input` 原文传给 `Run`；结构化工具的参数始终以 JSON 传入，即使其 schema 自带 `input` 字段

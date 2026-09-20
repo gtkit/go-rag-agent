@@ -5,7 +5,8 @@
     "RetrievalRecall": 1,
     "CitationPrecision": 1,
     "Groundedness": 1,
-    "AnswerMatchRate": 1
+    "AnswerMatchRate": 1,
+    "RefusalAccuracy": 1
   },
   "results": [
     {
